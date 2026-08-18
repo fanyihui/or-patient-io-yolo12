@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.pt
+*.onnx
+runs/
+outputs/
+data/samples/*.jpg
+data/samples/*.mp4
+data/samples/*.png
+.DS_Store
+*.egg-info/
+dist/
+build/

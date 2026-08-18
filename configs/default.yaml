@@ -1,0 +1,66 @@
+# 手术室入/出室检测 v1 — YOLO12 + ByteTrack（无需训练）
+# 核心：病床 + 平躺患者 关联后，穿越门口 ROI → 入/出室
+
+model:
+  weights: yolo12n.pt
+  conf: 0.20
+  iou: 0.5
+  imgsz: 640
+  device: cpu
+  classes: [0, 57, 59]   # person, couch, bed
+
+tracker:
+  config: configs/bytetrack.yaml
+
+target:
+  # bed_patient = 必须同时有床 + 平躺患者（推荐）
+  # stretcher   = 旧逻辑：床或横向人任一即可
+  # person      = 仅按人
+  mode: bed_patient
+  stretcher:
+    accept_bed_class: true
+    bed_class_ids: [59]
+    extra_bed_like_ids: [57]
+    lying_aspect_wh: 1.20
+    lying_area_ratio: 0.02
+    min_hits: 2
+    min_pair_iou: 0.02
+    max_center_dist_ratio: 0.18
+    allow_center_in_bed: true
+    pair_grace_frames: 8
+    # YOLO 把床+卧位合成一框时允许自配对；空床/直立人不计入
+    allow_merged_detection: true
+    merged_min_aspect_wh: 1.5
+    merged_min_area_ratio: 0.05
+
+zone:
+  mode: roi
+  rois:
+    outside:
+      polygon:
+        - [0.00, 0.10]
+        - [0.48, 0.10]
+        - [0.48, 0.92]
+        - [0.00, 0.92]
+    inside:
+      polygon:
+        - [0.52, 0.10]
+        - [1.00, 0.10]
+        - [1.00, 0.92]
+        - [0.52, 0.92]
+
+door_line:
+  p1: [0.50, 0.15]
+  p2: [0.50, 0.90]
+  outside_side: left
+
+events:
+  debounce_frames: 15
+  min_crossing_disp: 0.0
+
+output:
+  save_video: true
+  save_events_json: true
+  draw_tracks: true
+  draw_zone: true
+  draw_door_line: true
