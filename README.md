@@ -15,11 +15,16 @@
 
 ```bash
 pip install -r requirements.txt
+# 有 NVIDIA GPU 时请安装 CUDA 版 PyTorch，例如：
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
 python scripts/generate_synthetic_video.py
 python scripts/run_demo.py --source data/samples/or_door_synthetic.mp4 --output outputs/demo
-python tests/test_zones.py
-python tests/test_stretcher_filter.py
+# 强制 GPU：
+python scripts/run_demo.py --source your.mp4 --output outputs/demo --device 0
 ```
+
+默认 `model.device: auto`：检测到 CUDA 用 GPU 0，否则 CPU。启动时会打印 `[device] ...`。
 
 ## 配置要点
 

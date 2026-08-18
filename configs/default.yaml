@@ -6,7 +6,8 @@ model:
   conf: 0.20
   iou: 0.5
   imgsz: 640
-  device: cpu
+  # auto=有 CUDA 用 GPU(0)，否则 CPU；也可写 0 / cpu / 0,1
+  device: auto
   classes: [0, 57, 59]   # person, couch, bed
 
 tracker:

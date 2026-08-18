@@ -40,11 +40,31 @@ def resolve_detect_classes(cfg: dict) -> List[int]:
     return [0]
 
 
+def resolve_device(requested) -> str | int:
+    """把配置里的 device 解析成 ultralytics 可接受的值。auto → GPU0 或 cpu。"""
+    if requested is None:
+        value = "auto"
+    else:
+        value = str(requested).strip().lower()
+    if value not in ("auto", ""):
+        return int(value) if value.isdigit() else value
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return 0
+    except Exception:  # noqa: BLE001
+        pass
+    return "cpu"
+
+
 class ORIOPipeline:
     def __init__(self, config: dict, project_root: Optional[Path] = None):
         self.cfg = config
         self.root = project_root or Path.cwd()
         self.model = YOLO(config["model"]["weights"])
+        # 统一解析 device，避免 yaml 里写 auto/cpu 时行为不一致
+        self.cfg.setdefault("model", {})["device"] = resolve_device(config.get("model", {}).get("device"))
         tracker_rel = config["tracker"]["config"]
         self.tracker_cfg = str((self.root / tracker_rel).resolve())
         if not Path(self.tracker_cfg).exists():
