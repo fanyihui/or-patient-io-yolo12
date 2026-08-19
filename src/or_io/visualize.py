@@ -57,6 +57,7 @@ def draw_track(
     role_color = {
         "bed": (30, 180, 255),
         "lying_patient": (40, 200, 80),
+        "patient_head": (40, 220, 160),
         "person": (160, 160, 160),
         "other": (140, 140, 140),
     }
@@ -68,7 +69,8 @@ def draw_track(
     prefix = {
         "bed": "BED",
         "lying_patient": "LYING",
-        "person": "PERSON",
+        "patient_head": "HEAD",
+        "person": "STAFF",
     }.get(role, class_name)
     if is_target:
         prefix = "TARGET-" + prefix
@@ -96,7 +98,11 @@ def draw_pair(frame: np.ndarray, pair, side: str, confirmed: bool) -> None:
     bcx, bcy = int((bx1 + bx2) / 2), int((by1 + by2) / 2)
     pcx, pcy = int((px1 + px2) / 2), int((py1 + py2) / 2)
     cv2.line(frame, (bcx, bcy), (pcx, pcy), color, 2, cv2.LINE_AA)
-    tag = "BED+PATIENT" if confirmed else "pairing..."
+    tag = "BED+HEAD" if confirmed else "pairing..."
+    if getattr(pair, "evidence", "") == "lying_full":
+        tag = "BED+LYING" if confirmed else "pairing..."
+    elif getattr(pair, "evidence", "") == "merged":
+        tag = "MERGED" if confirmed else "pairing..."
     cv2.putText(
         frame,
         f"{tag} bed={pair.bed_track_id} pat={pair.patient_track_id} {side}",

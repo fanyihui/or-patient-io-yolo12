@@ -1,5 +1,5 @@
 # 手术室入/出室检测 v1 — YOLO12 + ByteTrack（无需训练）
-# 核心：病床 + 平躺患者 关联后，穿越门口 ROI → 入/出室
+# 场景：带栏杆病床推进；患者盖被，通常只露出头部
 
 model:
   weights: yolo12n.pt
@@ -14,22 +14,31 @@ tracker:
   config: configs/bytetrack.yaml
 
 target:
-  # bed_patient = 必须同时有床 + 平躺患者（推荐）
-  # stretcher   = 旧逻辑：床或横向人任一即可
-  # person      = 仅按人
+  # bed_patient = 病床 + 床上患者证据（推荐）
   mode: bed_patient
   stretcher:
     accept_bed_class: true
-    bed_class_ids: [59]
-    extra_bed_like_ids: [57]
+    bed_class_ids: [59]           # COCO bed（含栏杆病床多数仍落此类）
+    extra_bed_like_ids: [57]      # couch 弱兜底
+    bed_min_aspect_wh: 1.05       # 推床通常横向
+    bed_min_area_ratio: 0.03
+
+    # covered_head = 盖被只露头（默认真实场景）
+    # lying_full   = 可见全身横向
+    # any          = 两种都接受
+    patient_appearance: covered_head
+    max_patient_to_bed_area: 0.55 # 患者框/床框面积上限，排除床旁高大医护
+    staff_max_aspect_wh: 0.85
+    staff_min_height_ratio: 0.28
+
+    # 兼容全身可见 / 合成视频
     lying_aspect_wh: 1.20
     lying_area_ratio: 0.02
     min_hits: 2
-    min_pair_iou: 0.02
-    max_center_dist_ratio: 0.18
+    min_pair_iou: 0.01
+    max_center_dist_ratio: 0.20
     allow_center_in_bed: true
-    pair_grace_frames: 8
-    # YOLO 把床+卧位合成一框时允许自配对；空床/直立人不计入
+    pair_grace_frames: 12         # 头短暂被遮挡时保持配对
     allow_merged_detection: true
     merged_min_aspect_wh: 1.5
     merged_min_area_ratio: 0.05

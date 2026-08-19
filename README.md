@@ -1,15 +1,22 @@
 # 手术室患者入/出室时间检测（v1）
 
-免训练验证：**YOLO12** + **ByteTrack**，以 **病床 + 平躺患者** 关联后穿越门口 ROI，记录入/出室时间。
+免训练验证：**YOLO12** + **ByteTrack**。面向真实入室场景：**带栏杆病床推进，患者盖被、通常只露出头部**。
 
 ## 原理
 
-1. YOLO12 检测 `bed`/`couch` 与 `person`
-2. 区分 **平躺患者**（横向大框）与直立人员
-3. **病床 ↔ 平躺患者** 空间关联
-4. 仅关联成功才触发事件；空床、直立医护不计
-5. YOLO 合成一框时可用 `allow_merged_detection` 回退
-6. 组合中心穿越 ROI：`outside→inside` = enter
+1. YOLO12 检测 `bed`（病床/栏杆床）与 `person`
+2. **病床**为事件主体；**患者证据**优先为「中心落在床内的小框 person」（头部）
+3. 高大竖直 person 视为床旁医护，不单独触发
+4. 空床不触发；床+头关联成功后穿越门口 ROI → enter/exit
+5. 兼容全身横向 / YOLO 合并框（合成视频与遮挡回退）
+
+```yaml
+target:
+  mode: bed_patient
+  stretcher:
+    patient_appearance: covered_head   # 盖被只露头
+    max_patient_to_bed_area: 0.55
+```
 
 ## 快速开始
 

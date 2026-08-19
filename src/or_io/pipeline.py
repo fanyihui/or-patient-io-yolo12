@@ -241,7 +241,7 @@ class ORIOPipeline:
                             frame, d.track_id, d.xyxy, d.conf, side_now, is_target, role=role, class_name=str(cls_name)
                         )
                     prev = self._prev_centroid.get(d.track_id)
-                    if is_target or role in ("bed", "lying_patient"):
+                    if is_target or role in ("bed", "lying_patient", "patient_head"):
                         crossing, new_side = side_transition(
                             self._last_stable_side.get(d.track_id), side_now
                         )
