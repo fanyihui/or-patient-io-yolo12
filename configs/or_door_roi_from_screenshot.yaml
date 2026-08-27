@@ -1,0 +1,20 @@
+# 按 Camera 01 截图估算：上方偏右的手术室门
+# outside = 门外走廊（门洞内）
+# inside  = 术间内侧（门槛朝房间一侧）
+# 对照 data/samples/or_door_roi_preview.png 微调
+
+zone:
+  mode: roi
+  rois:
+    outside:
+      polygon:
+        - [0.63, 0.15]
+        - [0.81, 0.15]
+        - [0.81, 0.37]
+        - [0.63, 0.37]
+    inside:
+      polygon:
+        - [0.56, 0.38]
+        - [0.86, 0.36]
+        - [0.90, 0.58]
+        - [0.52, 0.60]

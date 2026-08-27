@@ -43,21 +43,23 @@ target:
     merged_min_aspect_wh: 1.5
     merged_min_area_ratio: 0.05
 
+# Camera 01：门在画面上方偏右（门外=走廊，内侧=术间）
+# 预览图：docs/or_door_roi_preview.png ；精细标定用 scripts/calibrate_zones.py
 zone:
   mode: roi
   rois:
-    outside:
+    outside:   # 门外走廊（门洞内）
       polygon:
-        - [0.00, 0.10]
-        - [0.48, 0.10]
-        - [0.48, 0.92]
-        - [0.00, 0.92]
-    inside:
+        - [0.63, 0.15]
+        - [0.81, 0.15]
+        - [0.81, 0.37]
+        - [0.63, 0.37]
+    inside:    # 术间内侧（门槛朝房间一侧）
       polygon:
-        - [0.52, 0.10]
-        - [1.00, 0.10]
-        - [1.00, 0.92]
-        - [0.52, 0.92]
+        - [0.56, 0.38]
+        - [0.86, 0.36]
+        - [0.90, 0.58]
+        - [0.52, 0.60]
 
 door_line:
   p1: [0.50, 0.15]
