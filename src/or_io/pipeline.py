@@ -1,4 +1,4 @@
-"""YOLO12 + ByteTrack 入/出室检测流水线（病床 + 平躺患者）。"""
+"""YOLO（COCO / YOLO-World）+ ByteTrack 入/出室检测流水线（病床 + 平躺患者）。"""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from typing import Deque, Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 import yaml
-from ultralytics import YOLO
 
 from .events import EventManager, IOEvent
+from .model_loader import load_detector
 from .stretcher_filter import BedPatientPair, Detection, TargetFilter
 from .visualize import draw_event_banner, draw_hud, draw_pair, draw_track, draw_zone
 from .zones import DoorLine, DualROIZones, Side, build_zone, side_transition
@@ -25,7 +25,11 @@ def load_config(path: str | Path) -> dict:
         return yaml.safe_load(f)
 
 
-def resolve_detect_classes(cfg: dict) -> List[int]:
+def resolve_detect_classes(cfg: dict) -> List[int] | None:
+    """仅 COCO 路径需要；开放词汇由 set_classes 限定，返回 None。"""
+    backend = str(cfg.get("model", {}).get("backend") or "world").lower()
+    if backend in ("world", "yolo-world", "open_vocab", "open-vocab"):
+        return None
     model_classes = cfg.get("model", {}).get("classes")
     if model_classes is not None:
         return list(model_classes)
@@ -34,7 +38,7 @@ def resolve_detect_classes(cfg: dict) -> List[int]:
     if mode in ("bed_patient", "stretcher"):
         st = target.get("stretcher") or target.get("bed_patient") or {}
         ids = set(st.get("bed_class_ids") or [59])
-        ids.update(st.get("extra_bed_like_ids") or [57])
+        ids.update(st.get("extra_bed_like_ids") or [56, 57, 60])
         ids.add(0)
         return sorted(ids)
     return [0]
@@ -62,16 +66,32 @@ class ORIOPipeline:
     def __init__(self, config: dict, project_root: Optional[Path] = None):
         self.cfg = config
         self.root = project_root or Path.cwd()
-        self.model = YOLO(config["model"]["weights"])
-        # 统一解析 device，避免 yaml 里写 auto/cpu 时行为不一致
         self.cfg.setdefault("model", {})["device"] = resolve_device(config.get("model", {}).get("device"))
+
+        self.detector = load_detector(self.cfg["model"])
+        self.model = self.detector.model
+        self.class_names = self.detector.names
+
         tracker_rel = config["tracker"]["config"]
         self.tracker_cfg = str((self.root / tracker_rel).resolve())
         if not Path(self.tracker_cfg).exists():
             self.tracker_cfg = "bytetrack.yaml"
 
         self.target_filter = TargetFilter.from_config(config)
-        self.detect_classes = resolve_detect_classes(config)
+        # 绑定开放词汇 / COCO 解析出的 bed、person 类别
+        self.target_filter.bind_class_ids(
+            bed_class_ids=self.detector.bed_class_ids,
+            person_class_ids=self.detector.person_class_ids,
+            extra_bed_like_ids=() if self.detector.backend == "world" else (),
+        )
+        if self.detector.backend == "world":
+            self.target_filter.extra_bed_like_ids = ()
+        else:
+            # COCO：bed_class_ids 已含 bed+furniture 弱类别
+            self.target_filter.extra_bed_like_ids = ()
+            self.target_filter.bed_class_ids = self.detector.bed_class_ids
+
+        self.detect_classes = self.detector.detect_classes
         ev = config.get("events", {})
         self.event_manager = EventManager(
             debounce_frames=int(ev.get("debounce_frames", 15)),
@@ -81,11 +101,15 @@ class ORIOPipeline:
         self._last_stable_side: Dict[int, Side] = {}
         self._recent_events: Deque[Tuple[int, IOEvent]] = deque(maxlen=32)
         self.zone: Optional[Zone] = None
+        self._tmp_id = 10_000_000
 
     def _ensure_zone(self, frame_w: int, frame_h: int) -> Zone:
         if self.zone is None:
             self.zone = build_zone(self.cfg, frame_w, frame_h)
         return self.zone
+
+    def _name_of(self, class_id: int) -> str:
+        return str(self.class_names.get(int(class_id), class_id))
 
     def _handle_pair_event(
         self,
@@ -123,6 +147,30 @@ class ORIOPipeline:
                 )
         self._prev_centroid[tid] = (cx, cy)
 
+    def _boxes_to_detections(self, boxes) -> List[Detection]:
+        if boxes is None or len(boxes) == 0:
+            return []
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy()
+        clss = boxes.cls.cpu().numpy().astype(int)
+        if boxes.id is not None:
+            ids = boxes.id.cpu().numpy().astype(int)
+        else:
+            # 跟踪偶发无 id 时仍画出检测框，便于排查床/头漏检
+            ids = np.arange(self._tmp_id, self._tmp_id + len(xyxy), dtype=int)
+            self._tmp_id += len(xyxy)
+        dets: List[Detection] = []
+        for box, tid, conf, cls_id in zip(xyxy, ids, confs, clss):
+            dets.append(
+                Detection(
+                    track_id=int(tid),
+                    class_id=int(cls_id),
+                    conf=float(conf),
+                    xyxy=tuple(float(v) for v in box.tolist()),  # type: ignore[arg-type]
+                )
+            )
+        return dets
+
     def process_video(
         self,
         source: str | Path,
@@ -153,9 +201,9 @@ class ORIOPipeline:
             writer = cv2.VideoWriter(str(out_video), fourcc, fps, (width, height))
 
         model_cfg = self.cfg["model"]
-        names = self.model.names
         frame_idx = 0
         t0 = time.time()
+        role_hist = {"bed": 0, "patient_head": 0, "lying_patient": 0, "person": 0, "other": 0}
 
         while True:
             ok, frame = cap.read()
@@ -164,38 +212,29 @@ class ORIOPipeline:
             if max_frames is not None and frame_idx >= max_frames:
                 break
 
-            results = self.model.track(
+            track_kwargs = dict(
                 source=frame,
                 persist=True,
                 tracker=self.tracker_cfg,
-                conf=float(model_cfg.get("conf", 0.35)),
+                conf=float(model_cfg.get("conf", 0.15)),
                 iou=float(model_cfg.get("iou", 0.5)),
                 imgsz=int(model_cfg.get("imgsz", 640)),
                 device=model_cfg.get("device", "cpu"),
-                classes=self.detect_classes,
                 verbose=False,
             )
+            if self.detect_classes is not None:
+                track_kwargs["classes"] = self.detect_classes
+            results = self.model.track(**track_kwargs)
             r0 = results[0]
             boxes = r0.boxes
 
             if out_cfg.get("draw_door_line", True) or out_cfg.get("draw_zone", True):
                 draw_zone(frame, zone)
 
-            dets: List[Detection] = []
-            if boxes is not None and boxes.id is not None and len(boxes) > 0:
-                xyxy = boxes.xyxy.cpu().numpy()
-                ids = boxes.id.cpu().numpy().astype(int)
-                confs = boxes.conf.cpu().numpy()
-                clss = boxes.cls.cpu().numpy().astype(int)
-                for box, tid, conf, cls_id in zip(xyxy, ids, confs, clss):
-                    dets.append(
-                        Detection(
-                            track_id=int(tid),
-                            class_id=int(cls_id),
-                            conf=float(conf),
-                            xyxy=tuple(float(v) for v in box.tolist()),  # type: ignore[arg-type]
-                        )
-                    )
+            dets = self._boxes_to_detections(boxes)
+            for d in dets:
+                role = self.target_filter.classify_role(d.class_id, d.xyxy, width, height)
+                role_hist[role] = role_hist.get(role, 0) + 1
 
             paired_ids: set[int] = set()
             if target_mode == "bed_patient":
@@ -217,9 +256,15 @@ class ORIOPipeline:
                         cx = (d.xyxy[0] + d.xyxy[2]) * 0.5
                         cy = (d.xyxy[1] + d.xyxy[3]) * 0.5
                         side = zone.classify(cx, cy)
-                        cls_name = names.get(d.class_id, str(d.class_id)) if isinstance(names, dict) else str(d.class_id)
                         draw_track(
-                            frame, d.track_id, d.xyxy, d.conf, side, False, role=role, class_name=str(cls_name)
+                            frame,
+                            d.track_id,
+                            d.xyxy,
+                            d.conf,
+                            side,
+                            False,
+                            role=role,
+                            class_name=self._name_of(d.class_id),
                         )
             else:
                 person_boxes = [
@@ -235,10 +280,16 @@ class ORIOPipeline:
                     cx = (d.xyxy[0] + d.xyxy[2]) * 0.5
                     cy = (d.xyxy[1] + d.xyxy[3]) * 0.5
                     side_now = zone.classify(cx, cy)
-                    cls_name = names.get(d.class_id, str(d.class_id)) if isinstance(names, dict) else str(d.class_id)
                     if out_cfg.get("draw_tracks", True):
                         draw_track(
-                            frame, d.track_id, d.xyxy, d.conf, side_now, is_target, role=role, class_name=str(cls_name)
+                            frame,
+                            d.track_id,
+                            d.xyxy,
+                            d.conf,
+                            side_now,
+                            is_target,
+                            role=role,
+                            class_name=self._name_of(d.class_id),
                         )
                     prev = self._prev_centroid.get(d.track_id)
                     if is_target or role in ("bed", "lying_patient", "patient_head"):
@@ -287,13 +338,18 @@ class ORIOPipeline:
             self.event_manager.save_json(events_path)
 
         elapsed = time.time() - t0
+        print(f"[detect-stats] frames={frame_idx} roles={role_hist}")
         return {
             "frames": frame_idx,
             "fps_process": round(frame_idx / max(elapsed, 1e-6), 2),
             "video_fps": fps,
             "zone_mode": zone_mode,
             "target_mode": target_mode,
+            "backend": self.detector.backend,
             "detect_classes": self.detect_classes,
+            "bed_class_ids": list(self.target_filter.bed_class_ids),
+            "person_class_ids": list(self.target_filter.person_class_ids),
+            "role_counts": role_hist,
             "enters": sum(1 for e in self.event_manager.events if e.event == "enter"),
             "exits": sum(1 for e in self.event_manager.events if e.event == "exit"),
             "events_path": str(events_path),

@@ -37,7 +37,7 @@ def resolve_device(requested: str | None) -> str | int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OR bed+patient enter/exit (YOLO12+ByteTrack)")
+    parser = argparse.ArgumentParser(description="OR bed+patient enter/exit (YOLO-World + ByteTrack)")
     parser.add_argument("--source", type=str, required=True)
     parser.add_argument("--config", type=str, default=str(ROOT / "configs/default.yaml"))
     parser.add_argument("--output", type=str, default=str(ROOT / "outputs/run"))

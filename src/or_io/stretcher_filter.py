@@ -6,9 +6,9 @@
 - 直立医护站在床旁推床，不应单独触发入出室
 
 v1 策略：
-1. 以 COCO bed（及弱兜底 couch）作为病床主体
-2. 患者证据优先 = 「中心落在床内的 person」—— 覆盖只露头的情况
-   （不再强制全身横向大框）
+1. 病床主体优先来自开放词汇（hospital bed / stretcher / gurney），
+   COCO 路径则用 bed + chair/couch/dining table 弱兜底
+2. 患者证据优先 = 「中心落在床内的 person/human head」—— 覆盖只露头的情况
 3. 用 患者框面积/床面积 上限排除站在床边的高大医护
 4. 仍保留横向全身 / 合并框回退，兼容旧合成验证视频
 """
@@ -132,26 +132,30 @@ class TargetFilter:
     min_hits: int = 2
 
     bed_class_ids: Tuple[int, ...] = (59,)
-    extra_bed_like_ids: Tuple[int, ...] = (57,)
+    extra_bed_like_ids: Tuple[int, ...] = (56, 57, 60)  # chair/couch/dining table 弱兜底
     accept_bed_class: bool = True
-    person_class_id: int = 0
-    # 带栏杆推床通常偏横向
-    bed_min_aspect_wh: float = 1.05
-    bed_min_area_ratio: float = 0.03
+    person_class_id: int = 0  # 兼容旧单 id
+    person_class_ids: Tuple[int, ...] = (0,)
+    # 透视下推床可能接近正方形，不宜过严
+    bed_min_aspect_wh: float = 0.85
+    bed_min_area_ratio: float = 0.012
 
     min_pair_iou: float = 0.01
-    max_center_dist_ratio: float = 0.20
+    max_center_dist_ratio: float = 0.28
     allow_center_in_bed: bool = True
-    pair_grace_frames: int = 12
+    pair_grace_frames: int = 18
     # 盖被只露头：患者框应明显小于病床
-    max_patient_to_bed_area: float = 0.55
+    max_patient_to_bed_area: float = 0.70
     # 过高过大的竖直 person 视为床旁医护
     staff_max_aspect_wh: float = 0.85
     staff_min_height_ratio: float = 0.28
+    # 头部候选：相对画面面积上限（略放宽，远距离头框更小）
+    head_max_area_ratio: float = 0.22
+    head_in_bed_margin: float = 0.22
 
     allow_merged_detection: bool = True
-    merged_min_aspect_wh: float = 1.5
-    merged_min_area_ratio: float = 0.05
+    merged_min_aspect_wh: float = 1.25
+    merged_min_area_ratio: float = 0.03
 
     fallback_horizontal_person: bool = True
     require_nearby_person: bool = False
@@ -173,32 +177,57 @@ class TargetFilter:
         appearance = str(st.get("patient_appearance") or "covered_head")
         if appearance not in ("covered_head", "lying_full", "any"):
             appearance = "covered_head"
+        person_ids = st.get("person_class_ids")
+        if person_ids is None:
+            person_ids = [int(st.get("person_class_id", 0))]
+        bed_ids = tuple(st.get("bed_class_ids") or [59])
+        extra_ids = tuple(st.get("extra_bed_like_ids") or [56, 57, 60])
         return cls(
             mode=mode,  # type: ignore[arg-type]
             person_mode=str(legacy.get("mode") or t.get("person_mode") or "all_persons"),  # type: ignore[arg-type]
             patient_appearance=appearance,  # type: ignore[arg-type]
-            min_aspect_wh=float(st.get("lying_aspect_wh") or st.get("min_aspect_wh") or 1.20),
-            min_area_ratio=float(st.get("lying_area_ratio") or st.get("min_area_ratio") or 0.02),
+            min_aspect_wh=float(st.get("lying_aspect_wh") or st.get("min_aspect_wh") or 1.10),
+            min_area_ratio=float(st.get("lying_area_ratio") or st.get("min_area_ratio") or 0.015),
             min_hits=int(st.get("min_hits") or legacy.get("min_hits") or 2),
-            bed_class_ids=tuple(st.get("bed_class_ids") or [59]),
-            extra_bed_like_ids=tuple(st.get("extra_bed_like_ids") or [57]),
+            bed_class_ids=bed_ids,
+            extra_bed_like_ids=extra_ids,
             accept_bed_class=bool(st.get("accept_bed_class", True)),
-            bed_min_aspect_wh=float(st.get("bed_min_aspect_wh", 1.05)),
-            bed_min_area_ratio=float(st.get("bed_min_area_ratio", 0.03)),
+            person_class_id=int(person_ids[0]) if person_ids else 0,
+            person_class_ids=tuple(int(x) for x in person_ids),
+            bed_min_aspect_wh=float(st.get("bed_min_aspect_wh", 0.85)),
+            bed_min_area_ratio=float(st.get("bed_min_area_ratio", 0.012)),
             min_pair_iou=float(st.get("min_pair_iou", 0.01)),
-            max_center_dist_ratio=float(st.get("max_center_dist_ratio", 0.20)),
+            max_center_dist_ratio=float(st.get("max_center_dist_ratio", 0.28)),
             allow_center_in_bed=bool(st.get("allow_center_in_bed", True)),
-            pair_grace_frames=int(st.get("pair_grace_frames", 12)),
-            max_patient_to_bed_area=float(st.get("max_patient_to_bed_area", 0.55)),
+            pair_grace_frames=int(st.get("pair_grace_frames", 18)),
+            max_patient_to_bed_area=float(st.get("max_patient_to_bed_area", 0.70)),
             staff_max_aspect_wh=float(st.get("staff_max_aspect_wh", 0.85)),
             staff_min_height_ratio=float(st.get("staff_min_height_ratio", 0.28)),
+            head_max_area_ratio=float(st.get("head_max_area_ratio", 0.22)),
+            head_in_bed_margin=float(st.get("head_in_bed_margin", 0.22)),
             allow_merged_detection=bool(st.get("allow_merged_detection", True)),
-            merged_min_aspect_wh=float(st.get("merged_min_aspect_wh", 1.5)),
-            merged_min_area_ratio=float(st.get("merged_min_area_ratio", 0.05)),
+            merged_min_aspect_wh=float(st.get("merged_min_aspect_wh", 1.25)),
+            merged_min_area_ratio=float(st.get("merged_min_area_ratio", 0.03)),
             fallback_horizontal_person=bool(st.get("fallback_horizontal_person", True)),
             require_nearby_person=bool(st.get("require_nearby_person", False)),
             nearby_person_dist_ratio=float(st.get("nearby_person_dist_ratio", 0.22)),
         )
+
+    def bind_class_ids(
+        self,
+        bed_class_ids: Sequence[int],
+        person_class_ids: Sequence[int],
+        extra_bed_like_ids: Sequence[int] | None = None,
+    ) -> None:
+        """运行时绑定开放词汇 / COCO 类别 id（pipeline 加载模型后调用）。"""
+        self.bed_class_ids = tuple(int(x) for x in bed_class_ids)
+        self.person_class_ids = tuple(int(x) for x in person_class_ids) or (0,)
+        self.person_class_id = self.person_class_ids[0]
+        if extra_bed_like_ids is not None:
+            self.extra_bed_like_ids = tuple(int(x) for x in extra_bed_like_ids)
+
+    def is_person_class(self, class_id: int) -> bool:
+        return int(class_id) in self.person_class_ids
 
     def reset(self) -> None:
         self._hits.clear()
@@ -227,7 +256,7 @@ class TargetFilter:
         return aspect <= self.staff_max_aspect_wh and height_ratio >= self.staff_min_height_ratio
 
     def is_lying_full_body(self, class_id: int, xyxy: Sequence[float], frame_w: int, frame_h: int) -> bool:
-        if int(class_id) != self.person_class_id:
+        if not self.is_person_class(class_id):
             return False
         return (
             _aspect_wh(xyxy) >= self.min_aspect_wh
@@ -236,12 +265,12 @@ class TargetFilter:
 
     def is_patient_head_candidate(self, class_id: int, xyxy: Sequence[float], frame_w: int, frame_h: int) -> bool:
         """盖被只露头：小/中等 person 框，排除高大站立者。"""
-        if int(class_id) != self.person_class_id:
+        if not self.is_person_class(class_id):
             return False
         if self.is_standing_staff(xyxy, frame_w, frame_h):
             return False
         # 头/肩区域通常不会占满半个画面
-        return _area_ratio(xyxy, frame_w, frame_h) <= 0.18
+        return _area_ratio(xyxy, frame_w, frame_h) <= self.head_max_area_ratio
 
     def classify_role(
         self,
@@ -252,7 +281,7 @@ class TargetFilter:
     ) -> Literal["bed", "lying_patient", "patient_head", "person", "other"]:
         if self.is_bed(class_id, xyxy, frame_w, frame_h):
             return "bed"
-        if int(class_id) != self.person_class_id:
+        if not self.is_person_class(class_id):
             return "other"
         if self.is_lying_full_body(class_id, xyxy, frame_w, frame_h):
             return "lying_patient"
@@ -273,7 +302,9 @@ class TargetFilter:
         bx, by = _center(bed.xyxy)
         px, py = _center(patient.xyxy)
         dist = ((px - bx) ** 2 + (py - by) ** 2) ** 0.5
-        in_bed = self.allow_center_in_bed and _patient_center_in_bed(patient.xyxy, bed.xyxy)
+        in_bed = self.allow_center_in_bed and _patient_center_in_bed(
+            patient.xyxy, bed.xyxy, margin=self.head_in_bed_margin
+        )
         area_ratio = _area(patient.xyxy) / max(_area(bed.xyxy), 1.0)
 
         if evidence == "head_on_bed":
@@ -325,7 +356,7 @@ class TargetFilter:
                         candidates.append((score, bed, pat, "head_on_bed"))
                 # 也允许普通 person 若中心在床内且足够小（分类成 person 的边缘情况）
                 for d in detections:
-                    if int(d.class_id) != self.person_class_id:
+                    if not self.is_person_class(d.class_id):
                         continue
                     if d.track_id in {h.track_id for h in heads} or d.track_id in {p.track_id for p in lying}:
                         continue
@@ -385,7 +416,7 @@ class TargetFilter:
 
         # 短暂丢失头部时，沿用最近成功配对（盖被/遮挡常见）
         active_beds = {p.bed_track_id for p in pairs}
-        person_by_id = {d.track_id: d for d in detections if int(d.class_id) == self.person_class_id}
+        person_by_id = {d.track_id: d for d in detections if self.is_person_class(d.class_id)}
         for bed_id, (last_f, old_pair) in list(self._pair_grace.items()):
             if bed_id in active_beds:
                 continue
@@ -450,7 +481,7 @@ class TargetFilter:
                 else:
                     ok = True
         else:
-            if int(class_id) != self.person_class_id:
+            if not self.is_person_class(class_id):
                 ok = False
             elif self.person_mode == "horizontal":
                 ok = _aspect_wh(xyxy) >= self.min_aspect_wh

@@ -71,10 +71,60 @@ def test_roles():
     assert f.classify_role(0, (40, 80, 110, 400), 960, 540) == "person"
 
 
+def test_open_vocab_class_binding():
+    """开放词汇：hospital bed / human head 映射到自定义 class id。"""
+    f = TargetFilter(mode="bed_patient", min_hits=1, allow_merged_detection=False)
+    # prompts: 0 person, 1 human head, 2 hospital bed
+    f.bind_class_ids(bed_class_ids=(2,), person_class_ids=(0, 1), extra_bed_like_ids=())
+    dets = [
+        Detection(10, 2, 0.8, (100, 200, 620, 380)),  # hospital bed
+        Detection(11, 1, 0.7, (140, 230, 210, 300)),  # human head on bed
+        Detection(12, 0, 0.9, (40, 80, 110, 360)),  # standing person
+    ]
+    assert f.classify_role(2, dets[0].xyxy, 960, 540) == "bed"
+    assert f.classify_role(1, dets[1].xyxy, 960, 540) == "patient_head"
+    pairs = f.associate(dets, 960, 540)
+    assert len(pairs) == 1
+    assert pairs[0].bed_track_id == 10
+    assert pairs[0].patient_track_id == 11
+
+
+def test_prompt_id_resolve():
+    from or_io.model_loader import resolve_prompt_class_ids
+
+    bed_ids, person_ids, names = resolve_prompt_class_ids(
+        ["person", "human head", "hospital bed", "stretcher"],
+        ["hospital bed", "stretcher"],
+        ["person", "human head"],
+    )
+    assert bed_ids == (2, 3)
+    assert person_ids == (0, 1)
+    assert names[2] == "hospital bed"
+
+
+def test_default_prompt_sets():
+    from or_io.model_loader import (
+        DEFAULT_BED_PROMPTS,
+        DEFAULT_PERSON_PROMPTS,
+        DEFAULT_WORLD_PROMPTS,
+        resolve_prompt_class_ids,
+    )
+
+    bed_ids, person_ids, _ = resolve_prompt_class_ids(
+        DEFAULT_WORLD_PROMPTS, DEFAULT_BED_PROMPTS, DEFAULT_PERSON_PROMPTS
+    )
+    assert person_ids == (0, 1, 2, 3)
+    assert 4 in bed_ids  # hospital bed
+    assert len(bed_ids) >= 4
+
+
 if __name__ == "__main__":
     test_bed_with_head_only()
     test_empty_bed_not_paired()
     test_staff_beside_bed_not_patient()
     test_merged_box()
     test_roles()
+    test_open_vocab_class_binding()
+    test_prompt_id_resolve()
+    test_default_prompt_sets()
     print("stretcher tests passed")

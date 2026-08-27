@@ -22,6 +22,9 @@ def main() -> int:
     cfg = load_config(ROOT / "configs/default.yaml")
     cfg["model"]["device"] = "cpu"
     cfg.setdefault("target", {})["mode"] = "bed_patient"
+    # 合成视频是左右穿门，用门线；默认 Camera 01 ROI 仅用于真实画面
+    cfg["zone"] = {"mode": "line"}
+    cfg["door_line"] = {"p1": [0.50, 0.15], "p2": [0.50, 0.90], "outside_side": "left"}
     out = ROOT / "outputs/validate"
     pipe = ORIOPipeline(cfg, project_root=ROOT)
     summary = pipe.process_video(source, out)

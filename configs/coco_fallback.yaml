@@ -1,0 +1,62 @@
+# COCO 回退配置（推床/盖被头经常漏检，仅作对比）
+model:
+  backend: coco
+  weights: yolo12n.pt
+  conf: 0.12
+  iou: 0.5
+  imgsz: 640
+  device: auto
+  classes: [0, 56, 57, 59, 60]  # person, chair, couch, bed, dining table
+
+tracker:
+  config: configs/bytetrack.yaml
+
+target:
+  mode: bed_patient
+  stretcher:
+    accept_bed_class: true
+    bed_class_ids: [59]
+    extra_bed_like_ids: [56, 57, 60]
+    bed_min_aspect_wh: 0.85
+    bed_min_area_ratio: 0.012
+    patient_appearance: covered_head
+    max_patient_to_bed_area: 0.70
+    head_max_area_ratio: 0.22
+    head_in_bed_margin: 0.22
+    staff_max_aspect_wh: 0.85
+    staff_min_height_ratio: 0.28
+    lying_aspect_wh: 1.10
+    lying_area_ratio: 0.015
+    min_hits: 2
+    allow_center_in_bed: true
+    pair_grace_frames: 18
+    allow_merged_detection: true
+    merged_min_aspect_wh: 1.25
+    merged_min_area_ratio: 0.03
+
+zone:
+  mode: roi
+  rois:
+    outside:
+      polygon:
+        - [0.52, 0.07]
+        - [0.70, 0.07]
+        - [0.71, 0.25]
+        - [0.52, 0.26]
+    inside:
+      polygon:
+        - [0.42, 0.27]
+        - [0.72, 0.25]
+        - [0.76, 0.46]
+        - [0.38, 0.48]
+
+events:
+  debounce_frames: 15
+  min_crossing_disp: 0.0
+
+output:
+  save_video: true
+  save_events_json: true
+  draw_tracks: true
+  draw_zone: true
+  draw_door_line: true
