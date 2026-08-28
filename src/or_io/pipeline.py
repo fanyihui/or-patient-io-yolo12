@@ -13,7 +13,7 @@ import yaml
 
 from .events import EventManager, IOEvent
 from .model_loader import load_detector
-from .stretcher_filter import BedPatientPair, Detection, TargetFilter
+from .stretcher_filter import PSEUDO_BED_CLASS_ID, BedPatientPair, Detection, TargetFilter
 from .visualize import draw_event_banner, draw_hud, draw_pair, draw_track, draw_zone
 from .zones import DoorLine, DualROIZones, Side, build_zone, side_transition
 
@@ -78,20 +78,18 @@ class ORIOPipeline:
             self.tracker_cfg = "bytetrack.yaml"
 
         self.target_filter = TargetFilter.from_config(config)
-        # 绑定开放词汇 / COCO 解析出的 bed、person 类别
         self.target_filter.bind_class_ids(
             bed_class_ids=self.detector.bed_class_ids,
             person_class_ids=self.detector.person_class_ids,
-            extra_bed_like_ids=() if self.detector.backend == "world" else (),
+            extra_bed_like_ids=(),
         )
-        if self.detector.backend == "world":
-            self.target_filter.extra_bed_like_ids = ()
-        else:
-            # COCO：bed_class_ids 已含 bed+furniture 弱类别
-            self.target_filter.extra_bed_like_ids = ()
-            self.target_filter.bed_class_ids = self.detector.bed_class_ids
+        self.target_filter.extra_bed_like_ids = ()
+        self.target_filter.bed_class_ids = tuple(
+            sorted(set(self.target_filter.bed_class_ids) | {PSEUDO_BED_CLASS_ID})
+        )
 
         self.detect_classes = self.detector.detect_classes
+        self.class_names[PSEUDO_BED_CLASS_ID] = "pseudo_bed"
         ev = config.get("events", {})
         self.event_manager = EventManager(
             debounce_frames=int(ev.get("debounce_frames", 15)),
@@ -102,6 +100,7 @@ class ORIOPipeline:
         self._recent_events: Deque[Tuple[int, IOEvent]] = deque(maxlen=32)
         self.zone: Optional[Zone] = None
         self._tmp_id = 10_000_000
+        self._sec_id = 8_000_000
 
     def _ensure_zone(self, frame_w: int, frame_h: int) -> Zone:
         if self.zone is None:
@@ -109,7 +108,101 @@ class ORIOPipeline:
         return self.zone
 
     def _name_of(self, class_id: int) -> str:
+        if int(class_id) == PSEUDO_BED_CLASS_ID:
+            return "pseudo_bed"
         return str(self.class_names.get(int(class_id), class_id))
+
+    @staticmethod
+    def _iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        return inter / max(area_a + area_b - inter, 1e-6)
+
+    def _secondary_detections(self, frame, model_cfg: dict, frame_w: int, frame_h: int) -> List[Detection]:
+        """COCO 辅检：补推床/家具漏检；用量化中心生成较稳的临时 track id。"""
+        sec = self.detector.secondary_model
+        if sec is None:
+            return []
+        conf = float(model_cfg.get("secondary_conf") or min(0.08, float(model_cfg.get("conf", 0.08))))
+        kwargs = dict(
+            source=frame,
+            conf=conf,
+            iou=float(model_cfg.get("iou", 0.5)),
+            imgsz=int(model_cfg.get("secondary_imgsz") or model_cfg.get("imgsz", 640)),
+            device=model_cfg.get("device", "cpu"),
+            verbose=False,
+        )
+        if self.detector.secondary_detect_classes is not None:
+            kwargs["classes"] = self.detector.secondary_detect_classes
+        r0 = sec.predict(**kwargs)[0]
+        boxes = r0.boxes
+        if boxes is None or len(boxes) == 0:
+            return []
+        offset = int(self.detector.secondary_id_offset)
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy()
+        clss = boxes.cls.cpu().numpy().astype(int)
+        allow = set(self.detector.secondary_bed_class_ids) | set(self.detector.secondary_person_class_ids)
+        out: List[Detection] = []
+        for box, conf_v, cls_id in zip(xyxy, confs, clss):
+            cid = int(cls_id)
+            if cid not in allow:
+                continue
+            x1, y1, x2, y2 = (float(v) for v in box.tolist())
+            cx = (x1 + x2) * 0.5
+            cy = (y1 + y2) * 0.5
+            # 量化中心 → 跨帧较稳的伪 track id
+            tid = 800_000 + int(cx / 48) * 1000 + int(cy / 48) + cid * 17
+            out.append(
+                Detection(
+                    track_id=int(tid),
+                    class_id=offset + cid,
+                    conf=float(conf_v),
+                    xyxy=(x1, y1, x2, y2),
+                )
+            )
+        return out
+
+    def _merge_detections(self, primary: List[Detection], secondary: List[Detection]) -> List[Detection]:
+        if not secondary:
+            return primary
+        merged = list(primary)
+        for s in secondary:
+            if any(self._iou(s.xyxy, p.xyxy) >= 0.45 for p in primary):
+                continue
+            merged.append(s)
+        return merged
+
+    def _boxes_to_detections(self, boxes) -> List[Detection]:
+        if boxes is None or len(boxes) == 0:
+            return []
+        xyxy = boxes.xyxy.cpu().numpy()
+        confs = boxes.conf.cpu().numpy()
+        clss = boxes.cls.cpu().numpy().astype(int)
+        if boxes.id is not None:
+            ids = boxes.id.cpu().numpy().astype(int)
+        else:
+            ids = np.arange(self._tmp_id, self._tmp_id + len(xyxy), dtype=int)
+            self._tmp_id += len(xyxy)
+        dets: List[Detection] = []
+        for box, tid, conf, cls_id in zip(xyxy, ids, confs, clss):
+            dets.append(
+                Detection(
+                    track_id=int(tid),
+                    class_id=int(cls_id),
+                    conf=float(conf),
+                    xyxy=tuple(float(v) for v in box.tolist()),  # type: ignore[arg-type]
+                )
+            )
+        return dets
 
     def _handle_pair_event(
         self,
@@ -146,30 +239,6 @@ class ORIOPipeline:
                     f"video_t={evt.video_time_sec:.2f}s frame={evt.frame_idx}"
                 )
         self._prev_centroid[tid] = (cx, cy)
-
-    def _boxes_to_detections(self, boxes) -> List[Detection]:
-        if boxes is None or len(boxes) == 0:
-            return []
-        xyxy = boxes.xyxy.cpu().numpy()
-        confs = boxes.conf.cpu().numpy()
-        clss = boxes.cls.cpu().numpy().astype(int)
-        if boxes.id is not None:
-            ids = boxes.id.cpu().numpy().astype(int)
-        else:
-            # 跟踪偶发无 id 时仍画出检测框，便于排查床/头漏检
-            ids = np.arange(self._tmp_id, self._tmp_id + len(xyxy), dtype=int)
-            self._tmp_id += len(xyxy)
-        dets: List[Detection] = []
-        for box, tid, conf, cls_id in zip(xyxy, ids, confs, clss):
-            dets.append(
-                Detection(
-                    track_id=int(tid),
-                    class_id=int(cls_id),
-                    conf=float(conf),
-                    xyxy=tuple(float(v) for v in box.tolist()),  # type: ignore[arg-type]
-                )
-            )
-        return dets
 
     def process_video(
         self,
@@ -232,6 +301,20 @@ class ORIOPipeline:
                 draw_zone(frame, zone)
 
             dets = self._boxes_to_detections(boxes)
+            if self.detector.backend == "fusion":
+                sec = self._secondary_detections(frame, model_cfg, width, height)
+                dets = self._merge_detections(dets, sec)
+
+            if self.target_filter.allow_pseudo_bed:
+                existing = [
+                    d
+                    for d in dets
+                    if self.target_filter.classify_role(d.class_id, d.xyxy, width, height) == "bed"
+                ]
+                dets = list(dets) + self.target_filter.synthesize_pseudo_beds(
+                    dets, width, height, existing_beds=existing
+                )
+
             for d in dets:
                 role = self.target_filter.classify_role(d.class_id, d.xyxy, width, height)
                 role_hist[role] = role_hist.get(role, 0) + 1

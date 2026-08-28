@@ -1,16 +1,21 @@
-# 手术室入/出室检测 v1 — YOLO-World 开放词汇 + ByteTrack（无需训练）
+# 手术室入/出室检测 v1 — 双模型融合 + 伪床推断（无需训练）
 # 场景：带栏杆病床推进；患者盖被，通常只露出头部
 #
-# 说明：COCO 预训练的 bed/person 对手术室推床、盖被只露头经常漏检；
-# 默认改用 YOLO-World，用文本提示检测 hospital bed / stretcher / human head。
+# 推床在 COCO / 开放词汇里经常漏检。默认策略：
+# 1) YOLO-World 主检（hospital bed / stretcher / human head …）
+# 2) YOLO12 COCO 辅检（bed/couch/dining table/person）
+# 3) 仍无床时：用盖被头框扩成伪床（pseudo_bed）再与头配对
 
 model:
-  # world = 开放词汇（推荐）；coco = 原 YOLO12 COCO 类别
-  backend: world
+  # fusion = world + coco（推荐）；world / yoloe / coco 也可
+  backend: fusion
+  primary_backend: world
   weights: yolov8s-worldv2.pt
-  conf: 0.12
+  secondary_weights: yolo12n.pt
+  secondary_conf: 0.08
+  conf: 0.08
   iou: 0.5
-  imgsz: 640
+  imgsz: 960
   # auto=有 CUDA 用 GPU(0)，否则 CPU；也可写 0 / cpu / 0,1
   device: auto
   prompts:
@@ -23,64 +28,75 @@ model:
     - gurney
     - medical bed
     - hospital stretcher
+    - patient trolley
+    - hospital trolley
+    - wheeled bed
+    - bed with rails
     - bed
     - mattress
-  bed_prompts: [hospital bed, stretcher, gurney, medical bed, hospital stretcher, bed, mattress]
+  bed_prompts:
+    - hospital bed
+    - stretcher
+    - gurney
+    - medical bed
+    - hospital stretcher
+    - patient trolley
+    - hospital trolley
+    - wheeled bed
+    - bed with rails
+    - bed
+    - mattress
   person_prompts: [person, human head, face, patient]
-
-  # 若改回 COCO：
-  # backend: coco
-  # weights: yolo12n.pt
-  # classes: [0, 56, 57, 59, 60]  # person, chair, couch, bed, dining table
+  classes: [0, 56, 57, 59, 60]
 
 tracker:
   config: configs/bytetrack.yaml
 
 target:
-  # bed_patient = 病床 + 床上患者证据（推荐）
   mode: bed_patient
   stretcher:
     accept_bed_class: true
-    # 下列 id 会在 pipeline 启动时被开放词汇映射覆盖
     bed_class_ids: [59]
     extra_bed_like_ids: [56, 57, 60]
-    bed_min_aspect_wh: 0.85       # 透视下推床可能接近正方形
-    bed_min_area_ratio: 0.012
+    bed_min_aspect_wh: 0.75
+    bed_min_area_ratio: 0.008
 
-    # covered_head = 盖被只露头（默认真实场景）
-    # lying_full   = 可见全身横向
-    # any          = 两种都接受
     patient_appearance: covered_head
-    max_patient_to_bed_area: 0.70 # 患者框/床框面积上限，排除床旁高大医护
-    head_max_area_ratio: 0.22
-    head_in_bed_margin: 0.22
+    max_patient_to_bed_area: 0.75
+    head_max_area_ratio: 0.25
+    head_in_bed_margin: 0.28
     staff_max_aspect_wh: 0.85
     staff_min_height_ratio: 0.28
 
-    # 兼容全身可见 / 合成视频
-    lying_aspect_wh: 1.10
-    lying_area_ratio: 0.015
+    # 推床类漏检时：用头部扩伪床
+    allow_pseudo_bed: true
+    pseudo_bed_require_staff: false
+    pseudo_bed_staff_dist_ratio: 0.32
+    pseudo_bed_width_scale: 4.8
+    pseudo_bed_height_scale: 2.6
+
+    lying_aspect_wh: 1.05
+    lying_area_ratio: 0.012
     min_hits: 2
     min_pair_iou: 0.01
-    max_center_dist_ratio: 0.28
+    max_center_dist_ratio: 0.32
     allow_center_in_bed: true
-    pair_grace_frames: 18         # 头短暂被遮挡时保持配对
+    pair_grace_frames: 20
     allow_merged_detection: true
-    merged_min_aspect_wh: 1.25
-    merged_min_area_ratio: 0.03
+    merged_min_aspect_wh: 1.15
+    merged_min_area_ratio: 0.025
 
-# Camera 01：门在画面上方偏右（门外=走廊，内侧=术间）
-# 预览图：docs/or_door_roi_preview.png ；精细标定用 scripts/calibrate_zones.py
+# Camera 01：门在画面上方偏右
 zone:
   mode: roi
   rois:
-    outside:   # 门外走廊（门洞内，偏左靠后）
+    outside:
       polygon:
         - [0.52, 0.07]
         - [0.70, 0.07]
         - [0.71, 0.25]
         - [0.52, 0.26]
-    inside:    # 术间内侧（门槛朝房间一侧，偏左靠上）
+    inside:
       polygon:
         - [0.42, 0.27]
         - [0.72, 0.25]

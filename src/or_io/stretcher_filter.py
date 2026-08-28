@@ -6,11 +6,11 @@
 - 直立医护站在床旁推床，不应单独触发入出室
 
 v1 策略：
-1. 病床主体优先来自开放词汇（hospital bed / stretcher / gurney），
-   COCO 路径则用 bed + chair/couch/dining table 弱兜底
-2. 患者证据优先 = 「中心落在床内的 person/human head」—— 覆盖只露头的情况
-3. 用 患者框面积/床面积 上限排除站在床边的高大医护
-4. 仍保留横向全身 / 合并框回退，兼容旧合成验证视频
+1. 病床主体优先来自开放词汇 / COCO 家具弱类
+2. 推床类仍漏检时：用盖被头（+可选附近医护）扩成伪床框
+3. 患者证据优先 = 「中心落在床内的 person/human head」
+4. 用 患者框面积/床面积 上限排除站在床边的高大医护
+5. 仍保留横向全身 / 合并框回退，兼容旧合成验证视频
 """
 
 from __future__ import annotations
@@ -23,6 +23,10 @@ import numpy as np
 TargetMode = Literal["bed_patient", "stretcher", "person"]
 PersonSubMode = Literal["all_persons", "horizontal", "large"]
 PatientAppearance = Literal["covered_head", "lying_full", "any"]
+
+# 当检测器检不出推床时，用头部/医护几何关系合成伪床框
+PSEUDO_BED_CLASS_ID = 9900
+PSEUDO_BED_TRACK_BASE = 900_000
 
 
 def _aspect_wh(xyxy: Sequence[float]) -> float:
@@ -157,6 +161,17 @@ class TargetFilter:
     merged_min_aspect_wh: float = 1.25
     merged_min_area_ratio: float = 0.03
 
+    # 推床类经常漏检：用盖被头 + 附近医护推断伪床框
+    allow_pseudo_bed: bool = True
+    pseudo_bed_require_staff: bool = False  # False=有头即可扩床；True=需附近站立医护
+    pseudo_bed_staff_dist_ratio: float = 0.30
+    pseudo_bed_width_scale: float = 4.8
+    pseudo_bed_height_scale: float = 2.6
+    pseudo_bed_min_width_ratio: float = 0.14
+    pseudo_bed_max_width_ratio: float = 0.48
+    pseudo_bed_min_height_ratio: float = 0.07
+    pseudo_bed_max_height_ratio: float = 0.24
+
     fallback_horizontal_person: bool = True
     require_nearby_person: bool = False
     nearby_person_dist_ratio: float = 0.22
@@ -208,6 +223,15 @@ class TargetFilter:
             allow_merged_detection=bool(st.get("allow_merged_detection", True)),
             merged_min_aspect_wh=float(st.get("merged_min_aspect_wh", 1.25)),
             merged_min_area_ratio=float(st.get("merged_min_area_ratio", 0.03)),
+            allow_pseudo_bed=bool(st.get("allow_pseudo_bed", True)),
+            pseudo_bed_require_staff=bool(st.get("pseudo_bed_require_staff", False)),
+            pseudo_bed_staff_dist_ratio=float(st.get("pseudo_bed_staff_dist_ratio", 0.30)),
+            pseudo_bed_width_scale=float(st.get("pseudo_bed_width_scale", 4.8)),
+            pseudo_bed_height_scale=float(st.get("pseudo_bed_height_scale", 2.6)),
+            pseudo_bed_min_width_ratio=float(st.get("pseudo_bed_min_width_ratio", 0.14)),
+            pseudo_bed_max_width_ratio=float(st.get("pseudo_bed_max_width_ratio", 0.48)),
+            pseudo_bed_min_height_ratio=float(st.get("pseudo_bed_min_height_ratio", 0.07)),
+            pseudo_bed_max_height_ratio=float(st.get("pseudo_bed_max_height_ratio", 0.24)),
             fallback_horizontal_person=bool(st.get("fallback_horizontal_person", True)),
             require_nearby_person=bool(st.get("require_nearby_person", False)),
             nearby_person_dist_ratio=float(st.get("nearby_person_dist_ratio", 0.22)),
@@ -220,7 +244,10 @@ class TargetFilter:
         extra_bed_like_ids: Sequence[int] | None = None,
     ) -> None:
         """运行时绑定开放词汇 / COCO 类别 id（pipeline 加载模型后调用）。"""
-        self.bed_class_ids = tuple(int(x) for x in bed_class_ids)
+        beds = [int(x) for x in bed_class_ids]
+        if self.allow_pseudo_bed and PSEUDO_BED_CLASS_ID not in beds:
+            beds.append(PSEUDO_BED_CLASS_ID)
+        self.bed_class_ids = tuple(beds)
         self.person_class_ids = tuple(int(x) for x in person_class_ids) or (0,)
         self.person_class_id = self.person_class_ids[0]
         if extra_bed_like_ids is not None:
@@ -237,6 +264,8 @@ class TargetFilter:
         if not self.accept_bed_class:
             return False
         cid = int(class_id)
+        if cid == PSEUDO_BED_CLASS_ID:
+            return True
         if cid not in self.bed_class_ids and cid not in self.extra_bed_like_ids:
             return False
         if xyxy is None or frame_w <= 0 or frame_h <= 0:
@@ -271,6 +300,105 @@ class TargetFilter:
             return False
         # 头/肩区域通常不会占满半个画面
         return _area_ratio(xyxy, frame_w, frame_h) <= self.head_max_area_ratio
+
+    def _nearby_staff(
+        self,
+        head: Detection,
+        staff: Sequence[Detection],
+        frame_w: int,
+        frame_h: int,
+    ) -> List[Detection]:
+        hx, hy = _center(head.xyxy)
+        thr = self.pseudo_bed_staff_dist_ratio * float(np.hypot(frame_w, frame_h))
+        near = []
+        for s in staff:
+            sx, sy = _center(s.xyxy)
+            if ((sx - hx) ** 2 + (sy - hy) ** 2) ** 0.5 <= thr:
+                near.append(s)
+        return near
+
+    def _expand_head_to_bed(
+        self,
+        head: Detection,
+        staff_near: Sequence[Detection],
+        frame_w: int,
+        frame_h: int,
+    ) -> Tuple[float, float, float, float]:
+        """把盖被头框扩成推床尺度伪框；若有医护则沿医护方向拉长。"""
+        x1, y1, x2, y2 = map(float, head.xyxy)
+        hw, hh = max(x2 - x1, 1.0), max(y2 - y1, 1.0)
+        cx, cy = _center(head.xyxy)
+
+        bw = hw * self.pseudo_bed_width_scale
+        bh = hh * self.pseudo_bed_height_scale
+        bw = float(np.clip(bw, self.pseudo_bed_min_width_ratio * frame_w, self.pseudo_bed_max_width_ratio * frame_w))
+        bh = float(np.clip(bh, self.pseudo_bed_min_height_ratio * frame_h, self.pseudo_bed_max_height_ratio * frame_h))
+
+        # 默认头在床的一端；有医护时床主体朝医护对侧/中间延伸
+        extend_right = True
+        if staff_near:
+            sx = float(np.mean([_center(s.xyxy)[0] for s in staff_near]))
+            extend_right = sx < cx  # 医护在左 → 床向右延伸（头在左端）
+
+        if extend_right:
+            bx1 = cx - bw * 0.28
+            bx2 = cx + bw * 0.72
+        else:
+            bx1 = cx - bw * 0.72
+            bx2 = cx + bw * 0.28
+        by1 = cy - bh * 0.45
+        by2 = cy + bh * 0.55
+
+        bx1 = float(np.clip(bx1, 0, frame_w - 1))
+        bx2 = float(np.clip(bx2, bx1 + 1, frame_w))
+        by1 = float(np.clip(by1, 0, frame_h - 1))
+        by2 = float(np.clip(by2, by1 + 1, frame_h))
+        return (bx1, by1, bx2, by2)
+
+    def synthesize_pseudo_beds(
+        self,
+        detections: Sequence[Detection],
+        frame_w: int,
+        frame_h: int,
+        existing_beds: Sequence[Detection] | None = None,
+    ) -> List[Detection]:
+        """检测器漏检推床时：用头部（+可选附近医护）合成伪床框。"""
+        if not self.allow_pseudo_bed:
+            return []
+        existing_beds = list(existing_beds or [])
+        heads: List[Detection] = []
+        staff: List[Detection] = []
+        for d in detections:
+            role = self.classify_role(d.class_id, d.xyxy, frame_w, frame_h)
+            if role == "patient_head":
+                heads.append(d)
+            elif role == "person" and self.is_standing_staff(d.xyxy, frame_w, frame_h):
+                staff.append(d)
+            elif role == "person":
+                # 非站立但也不算头的边缘 person，仍可作为弱头候选扩床
+                if _area_ratio(d.xyxy, frame_w, frame_h) <= self.head_max_area_ratio:
+                    heads.append(d)
+
+        out: List[Detection] = []
+        for head in heads:
+            near = self._nearby_staff(head, staff, frame_w, frame_h)
+            if self.pseudo_bed_require_staff and not near:
+                continue
+            bed_box = self._expand_head_to_bed(head, near, frame_w, frame_h)
+            # 已有真实床高度重叠则跳过
+            if any(_iou(bed_box, b.xyxy) >= 0.25 for b in existing_beds):
+                continue
+            if any(_iou(bed_box, b.xyxy) >= 0.35 for b in out):
+                continue
+            out.append(
+                Detection(
+                    track_id=PSEUDO_BED_TRACK_BASE + int(head.track_id),
+                    class_id=PSEUDO_BED_CLASS_ID,
+                    conf=float(min(0.55, max(0.2, head.conf * 0.85))),
+                    xyxy=bed_box,
+                )
+            )
+        return out
 
     def classify_role(
         self,
@@ -341,6 +469,11 @@ class TargetFilter:
                 heads.append(d)
             elif role == "lying_patient":
                 lying.append(d)
+
+        # 推床类漏检时补伪床（盖被头场景关键）
+        if self.allow_pseudo_bed:
+            pseudo = self.synthesize_pseudo_beds(detections, frame_w, frame_h, existing_beds=beds)
+            beds.extend(pseudo)
 
         pairs: List[BedPatientPair] = []
         used_patients: set[int] = set()

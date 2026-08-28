@@ -1,25 +1,26 @@
 # 手术室患者入/出室时间检测（v1）
 
-免训练验证：**YOLO-World 开放词汇** + **ByteTrack**。面向真实入室场景：**带栏杆病床推进，患者盖被、通常只露出头部**。
+免训练验证：**YOLO-World + COCO 融合** + **伪床推断** + **ByteTrack**。面向真实入室场景：**带栏杆病床推进，患者盖被、通常只露出头部**。
 
-> 重要：普通 COCO `yolo12n` 对手术室推床 / 盖被只露头经常**检不出床和病人**（只标出站立医护）。默认已改为 YOLO-World，用文本提示检测 `hospital bed` / `stretcher` / `human head`。
+> 推床在普通检测器里经常漏检。默认三层召回：① 开放词汇 `hospital bed`/`stretcher`；② COCO 家具辅检；③ 仍无床时用盖被头框扩成 `pseudo_bed`。
 
 ## 原理
 
-1. YOLO-World 按提示检测病床（hospital bed / stretcher / gurney）与人（person / human head / patient）
-2. **病床**为事件主体；**患者证据**优先为「中心落在床内的小框」（头部）
-3. 高大竖直 person 视为床旁医护，不单独触发
+1. 主检 YOLO-World + 辅检 YOLO12（bed/couch/dining table/person）
+2. 仍无床框时：把盖被头扩成伪床，再与头配对
+3. **病床**为事件主体；高大竖直 person 视为床旁医护，不单独触发
 4. 空床不触发；床+头关联成功后穿越门口 ROI → enter/exit
 5. 兼容全身横向 / 合并框（合成视频与遮挡回退）
 
 ```yaml
 model:
-  backend: world
+  backend: fusion
   weights: yolov8s-worldv2.pt
-  prompts: [person, human head, patient, hospital bed, stretcher, gurney, bed]
+  secondary_weights: yolo12n.pt
 target:
   mode: bed_patient
   stretcher:
+    allow_pseudo_bed: true
     patient_appearance: covered_head
 ```
 
