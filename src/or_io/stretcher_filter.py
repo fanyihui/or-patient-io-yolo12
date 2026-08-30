@@ -151,8 +151,8 @@ class TargetFilter:
     # 盖被只露头：患者框应明显小于病床
     max_patient_to_bed_area: float = 0.70
     # 过高过大的竖直 person 视为床旁医护
-    staff_max_aspect_wh: float = 0.85
-    staff_min_height_ratio: float = 0.28
+    staff_max_aspect_wh: float = 0.90
+    staff_min_height_ratio: float = 0.22
     # 头部候选：相对画面面积上限（略放宽，远距离头框更小）
     head_max_area_ratio: float = 0.22
     head_in_bed_margin: float = 0.22
@@ -216,8 +216,8 @@ class TargetFilter:
             allow_center_in_bed=bool(st.get("allow_center_in_bed", True)),
             pair_grace_frames=int(st.get("pair_grace_frames", 18)),
             max_patient_to_bed_area=float(st.get("max_patient_to_bed_area", 0.70)),
-            staff_max_aspect_wh=float(st.get("staff_max_aspect_wh", 0.85)),
-            staff_min_height_ratio=float(st.get("staff_min_height_ratio", 0.28)),
+            staff_max_aspect_wh=float(st.get("staff_max_aspect_wh", 0.90)),
+            staff_min_height_ratio=float(st.get("staff_min_height_ratio", 0.22)),
             head_max_area_ratio=float(st.get("head_max_area_ratio", 0.22)),
             head_in_bed_margin=float(st.get("head_in_bed_margin", 0.22)),
             allow_merged_detection=bool(st.get("allow_merged_detection", True)),
@@ -283,6 +283,43 @@ class TargetFilter:
         aspect = w / h
         height_ratio = h / max(frame_h, 1)
         return aspect <= self.staff_max_aspect_wh and height_ratio >= self.staff_min_height_ratio
+
+    def is_upright_person(
+        self,
+        class_id: int,
+        xyxy: Sequence[float],
+        frame_w: int,
+        frame_h: int,
+    ) -> bool:
+        """直立行人/医护（需屏蔽标注与事件主体）。"""
+        if not self.is_person_class(class_id):
+            return False
+        role = self.classify_role(class_id, xyxy, frame_w, frame_h)
+        if role in ("lying_patient", "patient_head", "bed"):
+            return False
+        if role == "person":
+            return True
+        return self.is_standing_staff(xyxy, frame_w, frame_h)
+
+    def should_draw_detection(
+        self,
+        class_id: int,
+        xyxy: Sequence[float],
+        frame_w: int,
+        frame_h: int,
+        *,
+        hide_standing_staff: bool = True,
+        draw_roles: Sequence[str] | None = None,
+    ) -> bool:
+        """是否在画面上绘制该检测框。默认屏蔽直立的人。"""
+        role = self.classify_role(class_id, xyxy, frame_w, frame_h)
+        if hide_standing_staff and (
+            role == "person" or self.is_upright_person(class_id, xyxy, frame_w, frame_h)
+        ):
+            return False
+        if draw_roles is not None:
+            return role in set(draw_roles)
+        return True
 
     def is_lying_full_body(self, class_id: int, xyxy: Sequence[float], frame_w: int, frame_h: int) -> bool:
         if not self.is_person_class(class_id):

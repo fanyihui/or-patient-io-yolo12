@@ -273,6 +273,10 @@ class ORIOPipeline:
         frame_idx = 0
         t0 = time.time()
         role_hist = {"bed": 0, "patient_head": 0, "lying_patient": 0, "person": 0, "other": 0}
+        hide_standing = bool(out_cfg.get("hide_standing_staff", True))
+        draw_roles = out_cfg.get("draw_roles")
+        if draw_roles is not None:
+            draw_roles = [str(x) for x in draw_roles]
 
         while True:
             ok, frame = cap.read()
@@ -335,6 +339,15 @@ class ORIOPipeline:
                     for d in dets:
                         if d.track_id in paired_ids:
                             continue
+                        if not self.target_filter.should_draw_detection(
+                            d.class_id,
+                            d.xyxy,
+                            width,
+                            height,
+                            hide_standing_staff=hide_standing,
+                            draw_roles=draw_roles,
+                        ):
+                            continue
                         role = self.target_filter.classify_role(d.class_id, d.xyxy, width, height)
                         cx = (d.xyxy[0] + d.xyxy[2]) * 0.5
                         cy = (d.xyxy[1] + d.xyxy[3]) * 0.5
@@ -360,10 +373,22 @@ class ORIOPipeline:
                     is_target = self.target_filter.accept_track(
                         d.track_id, d.class_id, d.xyxy, width, height, person_boxes=person_boxes
                     )
+                    # 直立的人不作为事件目标
+                    if hide_standing and self.target_filter.is_upright_person(
+                        d.class_id, d.xyxy, width, height
+                    ):
+                        is_target = False
                     cx = (d.xyxy[0] + d.xyxy[2]) * 0.5
                     cy = (d.xyxy[1] + d.xyxy[3]) * 0.5
                     side_now = zone.classify(cx, cy)
-                    if out_cfg.get("draw_tracks", True):
+                    if out_cfg.get("draw_tracks", True) and self.target_filter.should_draw_detection(
+                        d.class_id,
+                        d.xyxy,
+                        width,
+                        height,
+                        hide_standing_staff=hide_standing,
+                        draw_roles=draw_roles,
+                    ):
                         draw_track(
                             frame,
                             d.track_id,

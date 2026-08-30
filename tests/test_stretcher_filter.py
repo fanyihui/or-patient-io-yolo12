@@ -74,6 +74,17 @@ def test_roles():
     assert f.classify_role(0, (40, 80, 110, 400), 960, 540) == "person"
 
 
+def test_hide_upright_person_from_draw():
+    f = TargetFilter(mode="bed_patient", allow_pseudo_bed=False)
+    staff = (40, 80, 110, 400)  # tall upright
+    head = (140, 230, 200, 290)
+    assert f.is_upright_person(0, staff, 960, 540)
+    assert not f.is_upright_person(0, head, 960, 540)
+    assert not f.should_draw_detection(0, staff, 960, 540, hide_standing_staff=True)
+    assert f.should_draw_detection(0, head, 960, 540, hide_standing_staff=True)
+    assert f.should_draw_detection(59, (100, 200, 600, 360), 960, 540, hide_standing_staff=True)
+
+
 def test_pseudo_bed_from_head_when_stretcher_missing():
     """真实推床类漏检时：盖被头 → 伪床 → 配对。"""
     f = TargetFilter(
@@ -147,6 +158,7 @@ if __name__ == "__main__":
     test_staff_beside_bed_not_patient()
     test_merged_box()
     test_roles()
+    test_hide_upright_person_from_draw()
     test_pseudo_bed_from_head_when_stretcher_missing()
     test_open_vocab_class_binding()
     test_prompt_id_resolve()

@@ -65,8 +65,8 @@ target:
     max_patient_to_bed_area: 0.75
     head_max_area_ratio: 0.25
     head_in_bed_margin: 0.28
-    staff_max_aspect_wh: 0.85
-    staff_min_height_ratio: 0.28
+    staff_max_aspect_wh: 0.90
+    staff_min_height_ratio: 0.22
 
     # 推床类漏检时：用头部扩伪床
     allow_pseudo_bed: true
@@ -118,3 +118,7 @@ output:
   draw_tracks: true
   draw_zone: true
   draw_door_line: true
+  # 屏蔽直立医护/行人标注（默认开启；床/头/躺姿仍会画）
+  hide_standing_staff: true
+  # 可选白名单，例如: [bed, patient_head, lying_patient]
+  # draw_roles: [bed, patient_head, lying_patient]

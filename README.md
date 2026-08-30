@@ -8,7 +8,7 @@
 
 1. 主检 YOLO-World + 辅检 YOLO12（bed/couch/dining table/person）
 2. 仍无床框时：把盖被头扩成伪床，再与头配对
-3. **病床**为事件主体；高大竖直 person 视为床旁医护，不单独触发
+3. **病床**为事件主体；高大竖直 person 视为床旁医护，**默认不绘制、不触发事件**
 4. 空床不触发；床+头关联成功后穿越门口 ROI → enter/exit
 5. 兼容全身横向 / 合并框（合成视频与遮挡回退）
 
@@ -22,6 +22,8 @@ target:
   stretcher:
     allow_pseudo_bed: true
     patient_appearance: covered_head
+output:
+  hide_standing_staff: true   # 屏蔽直立的人
 ```
 
 ## 快速开始
