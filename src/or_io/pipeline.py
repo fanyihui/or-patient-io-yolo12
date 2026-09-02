@@ -309,18 +309,18 @@ class ORIOPipeline:
                 sec = self._secondary_detections(frame, model_cfg, width, height)
                 dets = self._merge_detections(dets, sec)
 
+            standing_boxes = self.target_filter.collect_standing_boxes(dets, width, height)
             if self.target_filter.allow_pseudo_bed:
-                existing = [
-                    d
-                    for d in dets
-                    if self.target_filter.classify_role(d.class_id, d.xyxy, width, height) == "bed"
-                ]
+                roles_pre = self.target_filter.classify_roles(dets, width, height)
+                existing = [d for d in dets if roles_pre.get(d.track_id) == "bed"]
                 dets = list(dets) + self.target_filter.synthesize_pseudo_beds(
                     dets, width, height, existing_beds=existing
                 )
+                standing_boxes = self.target_filter.collect_standing_boxes(dets, width, height)
 
+            roles = self.target_filter.classify_roles(dets, width, height)
             for d in dets:
-                role = self.target_filter.classify_role(d.class_id, d.xyxy, width, height)
+                role = roles.get(d.track_id, "other")
                 role_hist[role] = role_hist.get(role, 0) + 1
 
             paired_ids: set[int] = set()
@@ -346,9 +346,10 @@ class ORIOPipeline:
                             height,
                             hide_standing_staff=hide_standing,
                             draw_roles=draw_roles,
+                            standing_boxes=standing_boxes,
                         ):
                             continue
-                        role = self.target_filter.classify_role(d.class_id, d.xyxy, width, height)
+                        role = roles.get(d.track_id, "other")
                         cx = (d.xyxy[0] + d.xyxy[2]) * 0.5
                         cy = (d.xyxy[1] + d.xyxy[3]) * 0.5
                         side = zone.classify(cx, cy)
@@ -366,16 +367,15 @@ class ORIOPipeline:
                 person_boxes = [
                     list(d.xyxy)
                     for d in dets
-                    if self.target_filter.classify_role(d.class_id, d.xyxy, width, height) == "person"
+                    if roles.get(d.track_id) == "person"
                 ]
                 for d in dets:
-                    role = self.target_filter.classify_role(d.class_id, d.xyxy, width, height)
+                    role = roles.get(d.track_id, "other")
                     is_target = self.target_filter.accept_track(
                         d.track_id, d.class_id, d.xyxy, width, height, person_boxes=person_boxes
                     )
-                    # 直立的人不作为事件目标
                     if hide_standing and self.target_filter.is_upright_person(
-                        d.class_id, d.xyxy, width, height
+                        d.class_id, d.xyxy, width, height, standing_boxes=standing_boxes
                     ):
                         is_target = False
                     cx = (d.xyxy[0] + d.xyxy[2]) * 0.5
@@ -388,6 +388,7 @@ class ORIOPipeline:
                         height,
                         hide_standing_staff=hide_standing,
                         draw_roles=draw_roles,
+                        standing_boxes=standing_boxes,
                     ):
                         draw_track(
                             frame,

@@ -7,9 +7,9 @@
 
 v1 策略：
 1. 病床主体优先来自开放词汇 / COCO 家具弱类
-2. 推床类仍漏检时：用盖被头（+可选附近医护）扩成伪床框
-3. 患者证据优先 = 「中心落在床内的 person/human head」
-4. 用 患者框面积/床面积 上限排除站在床边的高大医护
+2. 患者证据优先 = 「中心落在床内的躺着的头」（排除直立人的头/脸）
+3. 用 患者框面积/床面积 上限排除站在床边的高大医护
+4. 推床类仍漏检时：用盖被头（非直立人头）扩成伪床框
 5. 仍保留横向全身 / 合并框回退，兼容旧合成验证视频
 """
 
@@ -153,9 +153,14 @@ class TargetFilter:
     # 过高过大的竖直 person 视为床旁医护
     staff_max_aspect_wh: float = 0.90
     staff_min_height_ratio: float = 0.22
-    # 头部候选：相对画面面积上限（略放宽，远距离头框更小）
+    # 头部候选：相对画面面积上下限
     head_max_area_ratio: float = 0.22
+    head_min_area_ratio: float = 0.0006
     head_in_bed_margin: float = 0.22
+    # 只认「躺着的头」：排除直立人体上半身的头/脸
+    reject_upright_heads: bool = True
+    standing_head_upper_ratio: float = 0.55
+    lying_head_min_aspect_wh: float = 0.65
 
     allow_merged_detection: bool = True
     merged_min_aspect_wh: float = 1.25
@@ -219,7 +224,11 @@ class TargetFilter:
             staff_max_aspect_wh=float(st.get("staff_max_aspect_wh", 0.90)),
             staff_min_height_ratio=float(st.get("staff_min_height_ratio", 0.22)),
             head_max_area_ratio=float(st.get("head_max_area_ratio", 0.22)),
+            head_min_area_ratio=float(st.get("head_min_area_ratio", 0.0006)),
             head_in_bed_margin=float(st.get("head_in_bed_margin", 0.22)),
+            reject_upright_heads=bool(st.get("reject_upright_heads", True)),
+            standing_head_upper_ratio=float(st.get("standing_head_upper_ratio", 0.55)),
+            lying_head_min_aspect_wh=float(st.get("lying_head_min_aspect_wh", 0.65)),
             allow_merged_detection=bool(st.get("allow_merged_detection", True)),
             merged_min_aspect_wh=float(st.get("merged_min_aspect_wh", 1.25)),
             merged_min_area_ratio=float(st.get("merged_min_area_ratio", 0.03)),
@@ -284,22 +293,62 @@ class TargetFilter:
         height_ratio = h / max(frame_h, 1)
         return aspect <= self.staff_max_aspect_wh and height_ratio >= self.staff_min_height_ratio
 
+    def collect_standing_boxes(
+        self,
+        detections: Sequence[Detection],
+        frame_w: int,
+        frame_h: int,
+    ) -> List[Tuple[float, float, float, float]]:
+        """收集直立全身框，用于排除其头部。"""
+        boxes: List[Tuple[float, float, float, float]] = []
+        for d in detections:
+            if not self.is_person_class(d.class_id):
+                continue
+            # 先按几何判断直立全身，避免依赖 role（role 可能把头误标成 patient_head）
+            if self.is_standing_staff(d.xyxy, frame_w, frame_h):
+                boxes.append(d.xyxy)
+        return boxes
+
+    def head_belongs_to_upright(
+        self,
+        head_xyxy: Sequence[float],
+        standing_boxes: Sequence[Sequence[float]],
+    ) -> bool:
+        """头/脸中心落在直立人体上半身，或与上半身明显重叠 → 直立人的头。"""
+        if not standing_boxes:
+            return False
+        hx, hy = _center(head_xyxy)
+        for box in standing_boxes:
+            x1, y1, x2, y2 = map(float, box)
+            bw, bh = max(x2 - x1, 1.0), max(y2 - y1, 1.0)
+            # 略放大直立框，避免头框刚好贴边漏判
+            mx, my = bw * 0.08, bh * 0.05
+            upper_y2 = y1 + bh * self.standing_head_upper_ratio
+            in_upper = (x1 - mx) <= hx <= (x2 + mx) and (y1 - my) <= hy <= (upper_y2 + my)
+            if in_upper:
+                return True
+            upper = (x1, y1, x2, upper_y2)
+            if _iou(head_xyxy, upper) >= 0.12:
+                return True
+        return False
+
     def is_upright_person(
         self,
         class_id: int,
         xyxy: Sequence[float],
         frame_w: int,
         frame_h: int,
+        standing_boxes: Sequence[Sequence[float]] | None = None,
     ) -> bool:
         """直立行人/医护（需屏蔽标注与事件主体）。"""
         if not self.is_person_class(class_id):
             return False
-        role = self.classify_role(class_id, xyxy, frame_w, frame_h)
-        if role in ("lying_patient", "patient_head", "bed"):
-            return False
-        if role == "person":
+        if self.is_standing_staff(xyxy, frame_w, frame_h):
             return True
-        return self.is_standing_staff(xyxy, frame_w, frame_h)
+        if standing_boxes and self.head_belongs_to_upright(xyxy, standing_boxes):
+            return True
+        role = self.classify_role(class_id, xyxy, frame_w, frame_h, standing_boxes=standing_boxes)
+        return role == "person"
 
     def should_draw_detection(
         self,
@@ -310,11 +359,13 @@ class TargetFilter:
         *,
         hide_standing_staff: bool = True,
         draw_roles: Sequence[str] | None = None,
+        standing_boxes: Sequence[Sequence[float]] | None = None,
     ) -> bool:
-        """是否在画面上绘制该检测框。默认屏蔽直立的人。"""
-        role = self.classify_role(class_id, xyxy, frame_w, frame_h)
+        """是否在画面上绘制该检测框。默认屏蔽直立的人（含直立人的头）。"""
+        role = self.classify_role(class_id, xyxy, frame_w, frame_h, standing_boxes=standing_boxes)
         if hide_standing_staff and (
-            role == "person" or self.is_upright_person(class_id, xyxy, frame_w, frame_h)
+            role == "person"
+            or self.is_upright_person(class_id, xyxy, frame_w, frame_h, standing_boxes=standing_boxes)
         ):
             return False
         if draw_roles is not None:
@@ -329,14 +380,64 @@ class TargetFilter:
             and _area_ratio(xyxy, frame_w, frame_h) >= self.min_area_ratio
         )
 
-    def is_patient_head_candidate(self, class_id: int, xyxy: Sequence[float], frame_w: int, frame_h: int) -> bool:
-        """盖被只露头：小/中等 person 框，排除高大站立者。"""
+    def is_patient_head_candidate(
+        self,
+        class_id: int,
+        xyxy: Sequence[float],
+        frame_w: int,
+        frame_h: int,
+        standing_boxes: Sequence[Sequence[float]] | None = None,
+    ) -> bool:
+        """盖被躺着只露头：小框 + 非直立人体的头。"""
         if not self.is_person_class(class_id):
             return False
+        # 全身直立框本身绝不是躺着的头
         if self.is_standing_staff(xyxy, frame_w, frame_h):
             return False
-        # 头/肩区域通常不会占满半个画面
-        return _area_ratio(xyxy, frame_w, frame_h) <= self.head_max_area_ratio
+        # 落在直立医护上半身的头/脸 → 不算患者头
+        if self.reject_upright_heads and standing_boxes is not None:
+            if self.head_belongs_to_upright(xyxy, standing_boxes):
+                return False
+        # 过瘦高的框更像直立人脸，不像枕上侧躺/仰躺露头
+        if _aspect_wh(xyxy) < self.lying_head_min_aspect_wh:
+            return False
+        area = _area_ratio(xyxy, frame_w, frame_h)
+        if area > self.head_max_area_ratio or area < self.head_min_area_ratio:
+            return False
+        return True
+
+    def classify_role(
+        self,
+        class_id: int,
+        xyxy: Sequence[float],
+        frame_w: int,
+        frame_h: int,
+        standing_boxes: Sequence[Sequence[float]] | None = None,
+    ) -> Literal["bed", "lying_patient", "patient_head", "person", "other"]:
+        if self.is_bed(class_id, xyxy, frame_w, frame_h):
+            return "bed"
+        if not self.is_person_class(class_id):
+            return "other"
+        if self.is_lying_full_body(class_id, xyxy, frame_w, frame_h):
+            return "lying_patient"
+        if self.is_patient_head_candidate(class_id, xyxy, frame_w, frame_h, standing_boxes=standing_boxes):
+            return "patient_head"
+        return "person"
+
+    def classify_roles(
+        self,
+        detections: Sequence[Detection],
+        frame_w: int,
+        frame_h: int,
+    ) -> Dict[int, str]:
+        """两遍分类：先找直立全身，再判定躺着的头。"""
+        standing = self.collect_standing_boxes(detections, frame_w, frame_h)
+        return {
+            d.track_id: self.classify_role(
+                d.class_id, d.xyxy, frame_w, frame_h, standing_boxes=standing
+            )
+            for d in detections
+        }
 
     def _nearby_staff(
         self,
@@ -371,11 +472,10 @@ class TargetFilter:
         bw = float(np.clip(bw, self.pseudo_bed_min_width_ratio * frame_w, self.pseudo_bed_max_width_ratio * frame_w))
         bh = float(np.clip(bh, self.pseudo_bed_min_height_ratio * frame_h, self.pseudo_bed_max_height_ratio * frame_h))
 
-        # 默认头在床的一端；有医护时床主体朝医护对侧/中间延伸
         extend_right = True
         if staff_near:
             sx = float(np.mean([_center(s.xyxy)[0] for s in staff_near]))
-            extend_right = sx < cx  # 医护在左 → 床向右延伸（头在左端）
+            extend_right = sx < cx
 
         if extend_right:
             bx1 = cx - bw * 0.28
@@ -399,30 +499,30 @@ class TargetFilter:
         frame_h: int,
         existing_beds: Sequence[Detection] | None = None,
     ) -> List[Detection]:
-        """检测器漏检推床时：用头部（+可选附近医护）合成伪床框。"""
+        """检测器漏检推床时：仅用「躺着的头」合成伪床框。"""
         if not self.allow_pseudo_bed:
             return []
         existing_beds = list(existing_beds or [])
+        roles = self.classify_roles(detections, frame_w, frame_h)
+        standing = self.collect_standing_boxes(detections, frame_w, frame_h)
         heads: List[Detection] = []
         staff: List[Detection] = []
         for d in detections:
-            role = self.classify_role(d.class_id, d.xyxy, frame_w, frame_h)
+            role = roles.get(d.track_id, "other")
             if role == "patient_head":
                 heads.append(d)
-            elif role == "person" and self.is_standing_staff(d.xyxy, frame_w, frame_h):
+            elif self.is_standing_staff(d.xyxy, frame_w, frame_h):
                 staff.append(d)
-            elif role == "person":
-                # 非站立但也不算头的边缘 person，仍可作为弱头候选扩床
-                if _area_ratio(d.xyxy, frame_w, frame_h) <= self.head_max_area_ratio:
-                    heads.append(d)
 
         out: List[Detection] = []
         for head in heads:
+            # 双重保险：直立人的头不扩床
+            if self.head_belongs_to_upright(head.xyxy, standing):
+                continue
             near = self._nearby_staff(head, staff, frame_w, frame_h)
             if self.pseudo_bed_require_staff and not near:
                 continue
             bed_box = self._expand_head_to_bed(head, near, frame_w, frame_h)
-            # 已有真实床高度重叠则跳过
             if any(_iou(bed_box, b.xyxy) >= 0.25 for b in existing_beds):
                 continue
             if any(_iou(bed_box, b.xyxy) >= 0.35 for b in out):
@@ -436,23 +536,6 @@ class TargetFilter:
                 )
             )
         return out
-
-    def classify_role(
-        self,
-        class_id: int,
-        xyxy: Sequence[float],
-        frame_w: int,
-        frame_h: int,
-    ) -> Literal["bed", "lying_patient", "patient_head", "person", "other"]:
-        if self.is_bed(class_id, xyxy, frame_w, frame_h):
-            return "bed"
-        if not self.is_person_class(class_id):
-            return "other"
-        if self.is_lying_full_body(class_id, xyxy, frame_w, frame_h):
-            return "lying_patient"
-        if self.is_patient_head_candidate(class_id, xyxy, frame_w, frame_h):
-            return "patient_head"
-        return "person"
 
     def _pair_score(
         self,
@@ -478,7 +561,7 @@ class TargetFilter:
                 return None
             if area_ratio > self.max_patient_to_bed_area:
                 return None
-            if self.is_standing_staff(patient.xyxy, frame_w, frame_h) and area_ratio > 0.25:
+            if self.is_standing_staff(patient.xyxy, frame_w, frame_h):
                 return None
             return float(0.7 + iou + max(0.0, 0.25 - dist / max(frame_diag, 1.0)))
 
@@ -495,11 +578,13 @@ class TargetFilter:
         frame_h: int,
         frame_idx: int = 0,
     ) -> List[BedPatientPair]:
+        roles = self.classify_roles(detections, frame_w, frame_h)
+        standing = self.collect_standing_boxes(detections, frame_w, frame_h)
         beds: List[Detection] = []
         heads: List[Detection] = []
         lying: List[Detection] = []
         for d in detections:
-            role = self.classify_role(d.class_id, d.xyxy, frame_w, frame_h)
+            role = roles.get(d.track_id, "other")
             if role == "bed":
                 beds.append(d)
             elif role == "patient_head":
@@ -507,7 +592,7 @@ class TargetFilter:
             elif role == "lying_patient":
                 lying.append(d)
 
-        # 推床类漏检时补伪床（盖被头场景关键）
+        # 推床类漏检时补伪床（仅躺着的头）
         if self.allow_pseudo_bed:
             pseudo = self.synthesize_pseudo_beds(detections, frame_w, frame_h, existing_beds=beds)
             beds.extend(pseudo)
@@ -517,18 +602,26 @@ class TargetFilter:
         used_beds: set[int] = set()
         candidates: List[Tuple[float, Detection, Detection, str]] = []
 
-        # 1) 优先：床 + 床上头部/小框（盖被场景）
+        # 1) 优先：床 + 床上躺着的头
         if self.patient_appearance in ("covered_head", "any"):
             for bed in beds:
                 for pat in heads:
+                    if self.head_belongs_to_upright(pat.xyxy, standing):
+                        continue
                     score = self._pair_score(bed, pat, frame_w, frame_h, "head_on_bed")
                     if score is not None:
                         candidates.append((score, bed, pat, "head_on_bed"))
-                # 也允许普通 person 若中心在床内且足够小（分类成 person 的边缘情况）
+                # 边缘：小框 person 且中心在床内，但仍排除直立人的头
                 for d in detections:
                     if not self.is_person_class(d.class_id):
                         continue
                     if d.track_id in {h.track_id for h in heads} or d.track_id in {p.track_id for p in lying}:
+                        continue
+                    if self.is_standing_staff(d.xyxy, frame_w, frame_h):
+                        continue
+                    if self.head_belongs_to_upright(d.xyxy, standing):
+                        continue
+                    if _aspect_wh(d.xyxy) < self.lying_head_min_aspect_wh:
                         continue
                     score = self._pair_score(bed, d, frame_w, frame_h, "head_on_bed")
                     if score is not None:

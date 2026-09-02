@@ -74,6 +74,40 @@ def test_roles():
     assert f.classify_role(0, (40, 80, 110, 400), 960, 540) == "person"
 
 
+def test_upright_head_not_patient_head():
+    """直立医护上半身的头/脸不能算作躺着的患者头。"""
+    f = TargetFilter(
+        mode="bed_patient",
+        min_hits=1,
+        allow_merged_detection=False,
+        allow_pseudo_bed=True,
+        reject_upright_heads=True,
+    )
+    # staff body tall; head box sits in upper torso/head region
+    staff_body = Detection(3, 0, 0.92, (300, 80, 380, 420))
+    upright_head = Detection(4, 0, 0.80, (310, 90, 370, 170))
+    lying_head = Detection(2, 0, 0.75, (500, 260, 560, 320))
+    bed = Detection(1, 59, 0.85, (450, 220, 720, 380))
+
+    standing = f.collect_standing_boxes([staff_body, upright_head, lying_head, bed], 960, 540)
+    assert len(standing) == 1
+    assert f.head_belongs_to_upright(upright_head.xyxy, standing)
+    assert not f.head_belongs_to_upright(lying_head.xyxy, standing)
+    assert f.classify_role(0, upright_head.xyxy, 960, 540, standing_boxes=standing) == "person"
+    assert f.classify_role(0, lying_head.xyxy, 960, 540, standing_boxes=standing) == "patient_head"
+
+    pairs = f.associate([staff_body, upright_head, lying_head, bed], 960, 540)
+    assert len(pairs) == 1
+    assert pairs[0].patient_track_id == 2
+    assert pairs[0].bed_track_id == 1
+
+
+def test_tall_face_box_rejected_as_lying_head():
+    f = TargetFilter(mode="bed_patient", allow_pseudo_bed=False, lying_head_min_aspect_wh=0.65)
+    tall_face = (200, 100, 240, 190)  # aspect ~0.44
+    assert not f.is_patient_head_candidate(0, tall_face, 960, 540, standing_boxes=[])
+
+
 def test_hide_upright_person_from_draw():
     f = TargetFilter(mode="bed_patient", allow_pseudo_bed=False)
     staff = (40, 80, 110, 400)  # tall upright
@@ -158,6 +192,8 @@ if __name__ == "__main__":
     test_staff_beside_bed_not_patient()
     test_merged_box()
     test_roles()
+    test_upright_head_not_patient_head()
+    test_tall_face_box_rejected_as_lying_head()
     test_hide_upright_person_from_draw()
     test_pseudo_bed_from_head_when_stretcher_missing()
     test_open_vocab_class_binding()
