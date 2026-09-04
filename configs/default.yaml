@@ -5,6 +5,7 @@
 # 1) YOLO-World 主检（hospital bed / stretcher / human head …）
 # 2) YOLO12 COCO 辅检（bed/couch/dining table/person）
 # 3) 仍无床时：用盖被头框扩成伪床（pseudo_bed）再与头配对
+# 4) 按整体尺寸区分病床推车（大）与器械推车（小）
 
 model:
   # fusion = world + coco（推荐）；world / yoloe / coco 也可
@@ -28,24 +29,31 @@ model:
     - gurney
     - medical bed
     - hospital stretcher
-    - patient trolley
-    - hospital trolley
     - wheeled bed
     - bed with rails
     - bed
     - mattress
+    - instrument cart
+    - equipment cart
+    - medical cart
+    - utility cart
+    - mayo stand
   bed_prompts:
     - hospital bed
     - stretcher
     - gurney
     - medical bed
     - hospital stretcher
-    - patient trolley
-    - hospital trolley
     - wheeled bed
     - bed with rails
     - bed
     - mattress
+  equipment_prompts:
+    - instrument cart
+    - equipment cart
+    - medical cart
+    - utility cart
+    - mayo stand
   person_prompts: [person, human head, face, patient]
   classes: [0, 56, 57, 59, 60]
 
@@ -58,8 +66,14 @@ target:
     accept_bed_class: true
     bed_class_ids: [59]
     extra_bed_like_ids: [56, 57, 60]
+    # 病床推车尺寸门槛（器械推车通常更小，达不到）
     bed_min_aspect_wh: 0.75
-    bed_min_area_ratio: 0.008
+    bed_min_area_ratio: 0.028
+    bed_min_width_ratio: 0.14
+    bed_min_height_ratio: 0.055
+    reject_small_bed_as_equipment: true
+    equipment_max_area_ratio: 0.024
+    equipment_relative_area_max: 0.60
 
     patient_appearance: covered_head
     max_patient_to_bed_area: 0.75
@@ -125,5 +139,7 @@ output:
   draw_door_line: true
   # 屏蔽直立医护/行人标注（默认开启；床/头/躺姿仍会画）
   hide_standing_staff: true
+  # 屏蔽器械推车（默认开启；不参与入出室）
+  hide_equipment_carts: true
   # 可选白名单，例如: [bed, patient_head, lying_patient]
   # draw_roles: [bed, patient_head, lying_patient]

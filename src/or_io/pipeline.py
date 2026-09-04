@@ -82,6 +82,7 @@ class ORIOPipeline:
             bed_class_ids=self.detector.bed_class_ids,
             person_class_ids=self.detector.person_class_ids,
             extra_bed_like_ids=(),
+            equipment_class_ids=getattr(self.detector, "equipment_class_ids", ()),
         )
         self.target_filter.extra_bed_like_ids = ()
         self.target_filter.bed_class_ids = tuple(
@@ -272,8 +273,16 @@ class ORIOPipeline:
         model_cfg = self.cfg["model"]
         frame_idx = 0
         t0 = time.time()
-        role_hist = {"bed": 0, "patient_head": 0, "lying_patient": 0, "person": 0, "other": 0}
+        role_hist = {
+            "bed": 0,
+            "equipment_cart": 0,
+            "patient_head": 0,
+            "lying_patient": 0,
+            "person": 0,
+            "other": 0,
+        }
         hide_standing = bool(out_cfg.get("hide_standing_staff", True))
+        hide_equipment = bool(out_cfg.get("hide_equipment_carts", True))
         draw_roles = out_cfg.get("draw_roles")
         if draw_roles is not None:
             draw_roles = [str(x) for x in draw_roles]
@@ -345,6 +354,7 @@ class ORIOPipeline:
                             width,
                             height,
                             hide_standing_staff=hide_standing,
+                            hide_equipment_carts=hide_equipment,
                             draw_roles=draw_roles,
                             standing_boxes=standing_boxes,
                         ):
@@ -387,6 +397,7 @@ class ORIOPipeline:
                         width,
                         height,
                         hide_standing_staff=hide_standing,
+                        hide_equipment_carts=hide_equipment,
                         draw_roles=draw_roles,
                         standing_boxes=standing_boxes,
                     ):

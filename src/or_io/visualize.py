@@ -56,18 +56,20 @@ def draw_track(
     x1, y1, x2, y2 = map(int, xyxy)
     role_color = {
         "bed": (30, 180, 255),
+        "equipment_cart": (180, 180, 40),
         "lying_patient": (40, 200, 80),
         "patient_head": (40, 220, 160),
         "person": (160, 160, 160),
         "other": (140, 140, 140),
     }
     color = role_color.get(role, (160, 160, 160))
-    if not is_target and role in ("person", "other"):
-        color = (160, 160, 160)
+    if not is_target and role in ("person", "other", "equipment_cart"):
+        color = (160, 160, 160) if role != "equipment_cart" else (180, 180, 40)
     thickness = 3 if is_target else 2
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
     prefix = {
         "bed": "BED",
+        "equipment_cart": "CART",
         "lying_patient": "LYING",
         "patient_head": "HEAD",
         "person": "STAFF",

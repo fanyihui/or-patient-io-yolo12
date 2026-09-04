@@ -10,22 +10,26 @@
 2. 仍无床框时：把盖被头扩成伪床，再与头配对
 3. **病床**为事件主体；高大竖直 person 视为床旁医护，**默认不绘制、不触发事件**
 4. **患者头只认躺着的头**（落在直立人体上半身的头/脸一律排除）
-5. 空床不触发；床+头关联成功后穿越门口 ROI → enter/exit
-6. 兼容全身横向 / 合并框（合成视频与遮挡回退）
+5. **病床推车 vs 器械推车**：器械车整体更小，不参与入出室；可用尺寸门槛 + 专用提示区分
+6. 空床不触发；床+头关联成功后穿越门口 ROI → enter/exit
+7. 兼容全身横向 / 合并框（合成视频与遮挡回退）
 
 ```yaml
 model:
   backend: fusion
   weights: yolov8s-worldv2.pt
   secondary_weights: yolo12n.pt
+  equipment_prompts: [instrument cart, equipment cart, medical cart]
 target:
   mode: bed_patient
   stretcher:
     allow_pseudo_bed: true
     patient_appearance: covered_head
     reject_upright_heads: true
+    bed_min_area_ratio: 0.028   # 病床更大；更小的当作器械车
 output:
-  hide_standing_staff: true   # 屏蔽直立的人
+  hide_standing_staff: true
+  hide_equipment_carts: true
 ```
 
 ## 快速开始

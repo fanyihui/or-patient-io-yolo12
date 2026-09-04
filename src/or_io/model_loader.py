@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from ultralytics import YOLO
 
-# 开放词汇默认提示：手术室推床 + 盖被只露头
+# 开放词汇默认提示：病床推车 + 器械推车 + 盖被只露头
 DEFAULT_WORLD_PROMPTS: List[str] = [
     "person",
     "human head",
@@ -18,26 +18,36 @@ DEFAULT_WORLD_PROMPTS: List[str] = [
     "gurney",
     "medical bed",
     "hospital stretcher",
-    "patient trolley",
-    "hospital trolley",
     "wheeled bed",
     "bed with rails",
     "bed",
     "mattress",
+    "instrument cart",
+    "equipment cart",
+    "medical cart",
+    "utility cart",
+    "mayo stand",
 ]
 
+# 病床 / 推床（整体更大）
 DEFAULT_BED_PROMPTS = (
     "hospital bed",
     "stretcher",
     "gurney",
     "medical bed",
     "hospital stretcher",
-    "patient trolley",
-    "hospital trolley",
     "wheeled bed",
     "bed with rails",
     "bed",
     "mattress",
+)
+# 器械推车（整体更小，不当作入出室病床）
+DEFAULT_EQUIPMENT_PROMPTS = (
+    "instrument cart",
+    "equipment cart",
+    "medical cart",
+    "utility cart",
+    "mayo stand",
 )
 DEFAULT_PERSON_PROMPTS = ("person", "human head", "face", "patient")
 
@@ -53,6 +63,7 @@ class DetectorSpec:
     bed_class_ids: Tuple[int, ...]
     person_class_ids: Tuple[int, ...]
     detect_classes: Optional[List[int]]
+    equipment_class_ids: Tuple[int, ...] = field(default_factory=tuple)
     secondary_model: Optional[YOLO] = None
     secondary_detect_classes: Optional[List[int]] = None
     secondary_bed_class_ids: Tuple[int, ...] = field(default_factory=tuple)
@@ -70,21 +81,25 @@ def resolve_prompt_class_ids(
     prompts: Sequence[str],
     bed_prompts: Sequence[str],
     person_prompts: Sequence[str],
-) -> Tuple[Tuple[int, ...], Tuple[int, ...], Dict[int, str]]:
+    equipment_prompts: Sequence[str] | None = None,
+) -> Tuple[Tuple[int, ...], Tuple[int, ...], Tuple[int, ...], Dict[int, str]]:
     names = {i: p for i, p in enumerate(prompts)}
     bed_set = {_norm_name(x) for x in bed_prompts}
     person_set = {_norm_name(x) for x in person_prompts}
+    equip_set = {_norm_name(x) for x in (equipment_prompts or ())}
     bed_ids = tuple(i for i, p in enumerate(prompts) if _norm_name(p) in bed_set)
     person_ids = tuple(i for i, p in enumerate(prompts) if _norm_name(p) in person_set)
+    equip_ids = tuple(i for i, p in enumerate(prompts) if _norm_name(p) in equip_set)
     if not person_ids:
         person_ids = (0,)
-    return bed_ids, person_ids, names
+    return bed_ids, person_ids, equip_ids, names
 
 
 def _load_open_vocab(weights: str, model_cfg: dict, backend_name: str) -> DetectorSpec:
     prompts = list(model_cfg.get("prompts") or DEFAULT_WORLD_PROMPTS)
     bed_prompts = list(model_cfg.get("bed_prompts") or DEFAULT_BED_PROMPTS)
     person_prompts = list(model_cfg.get("person_prompts") or DEFAULT_PERSON_PROMPTS)
+    equipment_prompts = list(model_cfg.get("equipment_prompts") or DEFAULT_EQUIPMENT_PROMPTS)
 
     # YOLOE 优先用 YOLOE 类；失败则 YOLO()
     model = None
@@ -116,16 +131,19 @@ def _load_open_vocab(weights: str, model_cfg: dict, backend_name: str) -> Detect
     else:
         raise RuntimeError(f"权重 {weights} 不支持 set_classes；请使用 YOLO-World / YOLOE 模型")
 
-    bed_ids, person_ids, names = resolve_prompt_class_ids(prompts, bed_prompts, person_prompts)
+    bed_ids, person_ids, equip_ids, names = resolve_prompt_class_ids(
+        prompts, bed_prompts, person_prompts, equipment_prompts
+    )
     print(f"[model] backend={backend_name} weights={weights}")
     print(f"[model] prompts={prompts}")
-    print(f"[model] bed_ids={bed_ids} person_ids={person_ids}")
+    print(f"[model] bed_ids={bed_ids} person_ids={person_ids} equipment_ids={equip_ids}")
     return DetectorSpec(
         backend=backend_name,
         model=model,
         names=names,
         bed_class_ids=bed_ids,
         person_class_ids=person_ids,
+        equipment_class_ids=equip_ids,
         detect_classes=None,
     )
 
@@ -173,6 +191,7 @@ def load_detector(model_cfg: dict) -> DetectorSpec:
             names[offset + int(cid)] = f"coco:{nm}"
         bed_ids = tuple(primary.bed_class_ids) + tuple(offset + i for i in secondary.bed_class_ids)
         person_ids = tuple(primary.person_class_ids) + tuple(offset + i for i in secondary.person_class_ids)
+        equip_ids = tuple(primary.equipment_class_ids)
         print(f"[model] backend=fusion primary={primary.backend} secondary=coco({sec_weights})")
         return DetectorSpec(
             backend="fusion",
@@ -180,6 +199,7 @@ def load_detector(model_cfg: dict) -> DetectorSpec:
             names=names,
             bed_class_ids=bed_ids,
             person_class_ids=person_ids,
+            equipment_class_ids=equip_ids,
             detect_classes=None,
             secondary_model=secondary.model,
             secondary_detect_classes=secondary.detect_classes,
