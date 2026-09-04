@@ -149,6 +149,47 @@ def test_lonely_equipment_cart_not_bed():
     assert f.associate([cart], 960, 540) == []
 
 
+def test_cart_pusher_not_lying_patient():
+    """推着器械车的医生：框变宽也不能标成躺着的患者。"""
+    f = TargetFilter(
+        mode="bed_patient",
+        allow_pseudo_bed=False,
+        reject_lying_near_equipment=True,
+        demote_bed_without_patient=True,
+        min_aspect_wh=1.45,
+        lying_max_height_ratio=0.28,
+        staff_push_max_aspect_wh=1.35,
+    )
+    f.bind_class_ids(bed_class_ids=(59,), person_class_ids=(0,), equipment_class_ids=(20,))
+    # 推车医护：够高但偏宽（旧逻辑易判成 lying）
+    wide_pusher = Detection(4, 0, 0.91, (300, 120, 480, 400))  # aspect~1.05, h_ratio~0.52
+    cart = Detection(5, 20, 0.86, (470, 280, 620, 420))
+    roles = f.classify_roles([wide_pusher, cart], 960, 540)
+    assert roles[5] == "equipment_cart"
+    assert roles[4] == "person"
+    assert f.is_standing_staff(wide_pusher.xyxy, 960, 540)
+    assert not f.is_lying_full_body(0, wide_pusher.xyxy, 960, 540, equipment_boxes=[cart.xyxy])
+    assert f.associate([wide_pusher, cart], 960, 540) == []
+
+
+def test_short_wide_box_near_cart_not_lying():
+    """靠近器械车的偏矮宽框（推车半身）也不算躺姿患者。"""
+    f = TargetFilter(
+        mode="bed_patient",
+        allow_pseudo_bed=False,
+        reject_lying_near_equipment=True,
+        min_aspect_wh=1.45,
+        lying_max_height_ratio=0.28,
+    )
+    f.bind_class_ids(bed_class_ids=(59,), person_class_ids=(0,), equipment_class_ids=(20,))
+    # 不够高进 standing，但够宽；靠近车 → 仍是医护
+    half_body = Detection(6, 0, 0.88, (350, 300, 560, 400))  # aspect~2.1, h_ratio~0.185
+    cart = Detection(7, 20, 0.84, (540, 310, 700, 420))
+    roles = f.classify_roles([half_body, cart], 960, 540)
+    assert roles[6] == "person"
+    assert roles[7] == "equipment_cart"
+
+
 def test_hide_upright_person_from_draw():
     f = TargetFilter(mode="bed_patient", allow_pseudo_bed=False)
     staff = (40, 80, 110, 400)  # tall upright
@@ -244,6 +285,8 @@ if __name__ == "__main__":
     test_tall_face_box_rejected_as_lying_head()
     test_equipment_cart_smaller_than_bed()
     test_lonely_equipment_cart_not_bed()
+    test_cart_pusher_not_lying_patient()
+    test_short_wide_box_near_cart_not_lying()
     test_hide_upright_person_from_draw()
     test_pseudo_bed_from_head_when_stretcher_missing()
     test_open_vocab_class_binding()

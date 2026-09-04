@@ -131,8 +131,14 @@ class TargetFilter:
     mode: TargetMode = "bed_patient"
     person_mode: PersonSubMode = "all_persons"
     patient_appearance: PatientAppearance = "covered_head"
-    min_aspect_wh: float = 1.20
+    min_aspect_wh: float = 1.45
     min_area_ratio: float = 0.02
+    # 躺姿还须「不够高」；推车医护 bbox 变宽时仍可能很高
+    lying_max_height_ratio: float = 0.28
+    # 与器械推车重叠/贴近 → 推车医护，不是躺着的患者
+    reject_lying_near_equipment: bool = True
+    lying_equipment_iou_min: float = 0.08
+    lying_equipment_center_dist_ratio: float = 0.12
     min_hits: int = 2
 
     bed_class_ids: Tuple[int, ...] = (59,)
@@ -166,6 +172,8 @@ class TargetFilter:
     max_patient_to_bed_area: float = 0.70
     # 过高过大的竖直 person 视为床旁医护
     staff_max_aspect_wh: float = 0.90
+    # 推器械车时人体框会变宽，仍按直立医护处理（须够高）
+    staff_push_max_aspect_wh: float = 1.35
     staff_min_height_ratio: float = 0.22
     # 头部候选：相对画面面积上下限
     head_max_area_ratio: float = 0.22
@@ -177,8 +185,8 @@ class TargetFilter:
     lying_head_min_aspect_wh: float = 0.65
 
     allow_merged_detection: bool = True
-    merged_min_aspect_wh: float = 1.25
-    merged_min_area_ratio: float = 0.03
+    merged_min_aspect_wh: float = 1.55
+    merged_min_area_ratio: float = 0.04
 
     # 推床类经常漏检：用盖被头 + 附近医护推断伪床框
     allow_pseudo_bed: bool = True
@@ -220,8 +228,12 @@ class TargetFilter:
             mode=mode,  # type: ignore[arg-type]
             person_mode=str(legacy.get("mode") or t.get("person_mode") or "all_persons"),  # type: ignore[arg-type]
             patient_appearance=appearance,  # type: ignore[arg-type]
-            min_aspect_wh=float(st.get("lying_aspect_wh") or st.get("min_aspect_wh") or 1.10),
-            min_area_ratio=float(st.get("lying_area_ratio") or st.get("min_area_ratio") or 0.015),
+            min_aspect_wh=float(st.get("lying_aspect_wh") or st.get("min_aspect_wh") or 1.45),
+            min_area_ratio=float(st.get("lying_area_ratio") or st.get("min_area_ratio") or 0.02),
+            lying_max_height_ratio=float(st.get("lying_max_height_ratio", 0.28)),
+            reject_lying_near_equipment=bool(st.get("reject_lying_near_equipment", True)),
+            lying_equipment_iou_min=float(st.get("lying_equipment_iou_min", 0.08)),
+            lying_equipment_center_dist_ratio=float(st.get("lying_equipment_center_dist_ratio", 0.12)),
             min_hits=int(st.get("min_hits") or legacy.get("min_hits") or 2),
             bed_class_ids=bed_ids,
             extra_bed_like_ids=extra_ids,
@@ -247,6 +259,7 @@ class TargetFilter:
             pair_grace_frames=int(st.get("pair_grace_frames", 18)),
             max_patient_to_bed_area=float(st.get("max_patient_to_bed_area", 0.70)),
             staff_max_aspect_wh=float(st.get("staff_max_aspect_wh", 0.90)),
+            staff_push_max_aspect_wh=float(st.get("staff_push_max_aspect_wh", 1.35)),
             staff_min_height_ratio=float(st.get("staff_min_height_ratio", 0.22)),
             head_max_area_ratio=float(st.get("head_max_area_ratio", 0.22)),
             head_min_area_ratio=float(st.get("head_min_area_ratio", 0.0006)),
@@ -255,8 +268,8 @@ class TargetFilter:
             standing_head_upper_ratio=float(st.get("standing_head_upper_ratio", 0.55)),
             lying_head_min_aspect_wh=float(st.get("lying_head_min_aspect_wh", 0.65)),
             allow_merged_detection=bool(st.get("allow_merged_detection", True)),
-            merged_min_aspect_wh=float(st.get("merged_min_aspect_wh", 1.25)),
-            merged_min_area_ratio=float(st.get("merged_min_area_ratio", 0.03)),
+            merged_min_aspect_wh=float(st.get("merged_min_aspect_wh", 1.55)),
+            merged_min_area_ratio=float(st.get("merged_min_area_ratio", 0.04)),
             allow_pseudo_bed=bool(st.get("allow_pseudo_bed", True)),
             pseudo_bed_require_staff=bool(st.get("pseudo_bed_require_staff", False)),
             pseudo_bed_staff_dist_ratio=float(st.get("pseudo_bed_staff_dist_ratio", 0.30)),
@@ -401,11 +414,16 @@ class TargetFilter:
         return False
 
     def is_standing_staff(self, xyxy: Sequence[float], frame_w: int, frame_h: int) -> bool:
-        """高大竖直框 ≈ 床旁行走/推床医护。"""
+        """高大竖直框 ≈ 床旁行走/推车医护（推车时框可变宽）。"""
         w, h = _wh(xyxy)
         aspect = w / h
         height_ratio = h / max(frame_h, 1)
-        return aspect <= self.staff_max_aspect_wh and height_ratio >= self.staff_min_height_ratio
+        if height_ratio < self.staff_min_height_ratio:
+            return False
+        if aspect <= self.staff_max_aspect_wh:
+            return True
+        # 够高但略宽：典型推器械车姿态，仍算直立
+        return aspect <= self.staff_push_max_aspect_wh
 
     def collect_standing_boxes(
         self,
@@ -489,13 +507,56 @@ class TargetFilter:
             return role in set(draw_roles)
         return True
 
-    def is_lying_full_body(self, class_id: int, xyxy: Sequence[float], frame_w: int, frame_h: int) -> bool:
+    def is_lying_full_body(
+        self,
+        class_id: int,
+        xyxy: Sequence[float],
+        frame_w: int,
+        frame_h: int,
+        equipment_boxes: Sequence[Sequence[float]] | None = None,
+    ) -> bool:
+        """平躺全身：须足够横向且不够高；靠近器械车的推车医护排除。"""
         if not self.is_person_class(class_id):
             return False
-        return (
-            _aspect_wh(xyxy) >= self.min_aspect_wh
-            and _area_ratio(xyxy, frame_w, frame_h) >= self.min_area_ratio
-        )
+        if self.is_standing_staff(xyxy, frame_w, frame_h):
+            return False
+        w, h = _wh(xyxy)
+        aspect = w / h
+        height_ratio = h / max(frame_h, 1)
+        if height_ratio > self.lying_max_height_ratio:
+            return False
+        if aspect < self.min_aspect_wh:
+            return False
+        if _area_ratio(xyxy, frame_w, frame_h) < self.min_area_ratio:
+            return False
+        if self.reject_lying_near_equipment and equipment_boxes:
+            if self._person_near_equipment(xyxy, equipment_boxes, frame_w, frame_h):
+                return False
+        return True
+
+    def _person_near_equipment(
+        self,
+        person_xyxy: Sequence[float],
+        equipment_boxes: Sequence[Sequence[float]],
+        frame_w: int,
+        frame_h: int,
+    ) -> bool:
+        """推着器械车的医护：与车框重叠或中心贴近。"""
+        px, py = _center(person_xyxy)
+        thr = self.lying_equipment_center_dist_ratio * float(np.hypot(frame_w, frame_h))
+        for box in equipment_boxes:
+            if _iou(person_xyxy, box) >= self.lying_equipment_iou_min:
+                return True
+            cx, cy = _center(box)
+            if ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5 <= thr:
+                return True
+            # 人的水平范围与车重叠，且人底部接近车（推车姿态）
+            x1, y1, x2, y2 = map(float, person_xyxy)
+            bx1, by1, bx2, by2 = map(float, box)
+            x_overlap = min(x2, bx2) - max(x1, bx1)
+            if x_overlap > 0 and abs(y2 - by2) <= 0.08 * frame_h:
+                return True
+        return False
 
     def is_patient_head_candidate(
         self,
@@ -504,6 +565,7 @@ class TargetFilter:
         frame_w: int,
         frame_h: int,
         standing_boxes: Sequence[Sequence[float]] | None = None,
+        equipment_boxes: Sequence[Sequence[float]] | None = None,
     ) -> bool:
         """盖被躺着只露头：小框 + 非直立人体的头。"""
         if not self.is_person_class(class_id):
@@ -515,11 +577,19 @@ class TargetFilter:
         if self.reject_upright_heads and standing_boxes is not None:
             if self.head_belongs_to_upright(xyxy, standing_boxes):
                 return False
+        # 头框与器械车明显重叠才排除（松散中心距会误伤床上患者头）
+        if self.reject_lying_near_equipment and equipment_boxes:
+            for box in equipment_boxes:
+                if _iou(xyxy, box) >= max(self.lying_equipment_iou_min, 0.15):
+                    return False
         # 过瘦高的框更像直立人脸，不像枕上侧躺/仰躺露头
         if _aspect_wh(xyxy) < self.lying_head_min_aspect_wh:
             return False
         area = _area_ratio(xyxy, frame_w, frame_h)
         if area > self.head_max_area_ratio or area < self.head_min_area_ratio:
+            return False
+        # 又大又横 → 全身/合并框，不是露头
+        if _aspect_wh(xyxy) >= self.min_aspect_wh and area >= self.min_area_ratio:
             return False
         return True
 
@@ -531,6 +601,7 @@ class TargetFilter:
         frame_h: int,
         standing_boxes: Sequence[Sequence[float]] | None = None,
         largest_bed_area: float | None = None,
+        equipment_boxes: Sequence[Sequence[float]] | None = None,
     ) -> Literal["bed", "equipment_cart", "lying_patient", "patient_head", "person", "other"]:
         if self.is_equipment_cart(
             class_id, xyxy, frame_w, frame_h, largest_bed_area=largest_bed_area
@@ -540,9 +611,21 @@ class TargetFilter:
             return "bed"
         if not self.is_person_class(class_id):
             return "other"
-        if self.is_lying_full_body(class_id, xyxy, frame_w, frame_h):
+        # 先排除直立医护，再判躺姿（避免推车时 bbox 变宽被当成躺着）
+        if self.is_standing_staff(xyxy, frame_w, frame_h):
+            return "person"
+        if self.is_lying_full_body(
+            class_id, xyxy, frame_w, frame_h, equipment_boxes=equipment_boxes
+        ):
             return "lying_patient"
-        if self.is_patient_head_candidate(class_id, xyxy, frame_w, frame_h, standing_boxes=standing_boxes):
+        if self.is_patient_head_candidate(
+            class_id,
+            xyxy,
+            frame_w,
+            frame_h,
+            standing_boxes=standing_boxes,
+            equipment_boxes=equipment_boxes,
+        ):
             return "patient_head"
         return "person"
 
@@ -552,7 +635,7 @@ class TargetFilter:
         frame_w: int,
         frame_h: int,
     ) -> Dict[int, str]:
-        """分类：直立全身 → 躺头；再按尺寸区分病床推车 vs 器械推车。"""
+        """分类：器械车/病床 → 直立 → 躺姿/躺头。"""
         standing = self.collect_standing_boxes(detections, frame_w, frame_h)
         bed_like_areas = [
             _area_ratio(d.xyxy, frame_w, frame_h)
@@ -560,6 +643,17 @@ class TargetFilter:
             if self.is_bed_like_class(d.class_id) or self.is_equipment_class(d.class_id)
         ]
         largest = max(bed_like_areas) if bed_like_areas else None
+
+        # 先标出器械车，供躺姿排除「推车医护」
+        equipment_boxes: List[Tuple[float, float, float, float]] = []
+        for d in detections:
+            if self.is_equipment_cart(
+                d.class_id, d.xyxy, frame_w, frame_h, largest_bed_area=largest
+            ):
+                equipment_boxes.append(d.xyxy)
+            elif self.is_equipment_class(d.class_id):
+                equipment_boxes.append(d.xyxy)
+
         roles = {
             d.track_id: self.classify_role(
                 d.class_id,
@@ -568,6 +662,7 @@ class TargetFilter:
                 frame_h,
                 standing_boxes=standing,
                 largest_bed_area=largest,
+                equipment_boxes=equipment_boxes,
             )
             for d in detections
         }
@@ -587,8 +682,9 @@ class TargetFilter:
                 ar = _area_ratio(d.xyxy, frame_w, frame_h)
                 if ar < max_bed * self.equipment_relative_area_max:
                     roles[d.track_id] = "equipment_cart"
+                    equipment_boxes.append(d.xyxy)
 
-        # 无躺着患者证据的中小型「床」→ 器械车（避免器械车被标成 BED）
+        # 无躺着患者证据的中小型「床」→ 器械车
         if self.demote_bed_without_patient:
             for d in detections:
                 if roles.get(d.track_id) != "bed":
@@ -599,10 +695,18 @@ class TargetFilter:
                     continue
                 ar = _area_ratio(d.xyxy, frame_w, frame_h)
                 aspect = _aspect_wh(d.xyxy)
-                # 明确的大空病床推车可保留为 bed；其余无患者床状目标当器械车
                 if ar >= self.empty_stretcher_min_area_ratio and aspect >= self.empty_stretcher_min_aspect_wh:
                     continue
                 roles[d.track_id] = "equipment_cart"
+                equipment_boxes.append(d.xyxy)
+
+        # 再扫一遍：靠近器械车的「躺姿全身」降回医护（头框不靠松散距离误伤）
+        if self.reject_lying_near_equipment and equipment_boxes:
+            for d in detections:
+                if roles.get(d.track_id) != "lying_patient":
+                    continue
+                if self._person_near_equipment(d.xyxy, equipment_boxes, frame_w, frame_h):
+                    roles[d.track_id] = "person"
         return roles
 
     def _nearby_staff(
@@ -822,7 +926,25 @@ class TargetFilter:
 
         # 3) 合并框回退：YOLO 把床+患者合成一个横向大框
         if self.allow_merged_detection:
-            for pat in lying:
+            merged_cands: List[Detection] = list(lying)
+            seen = {d.track_id for d in merged_cands}
+            for d in detections:
+                if d.track_id in seen or d.track_id in used_patients:
+                    continue
+                if not self.is_person_class(d.class_id):
+                    continue
+                if self.is_standing_staff(d.xyxy, frame_w, frame_h):
+                    continue
+                role = roles.get(d.track_id)
+                if role in ("bed", "equipment_cart", "other"):
+                    continue
+                if (
+                    _aspect_wh(d.xyxy) >= self.merged_min_aspect_wh
+                    and _area_ratio(d.xyxy, frame_w, frame_h) >= self.merged_min_area_ratio
+                ):
+                    merged_cands.append(d)
+                    seen.add(d.track_id)
+            for pat in merged_cands:
                 if pat.track_id in used_patients:
                     continue
                 if (
