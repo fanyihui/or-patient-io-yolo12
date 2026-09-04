@@ -115,29 +115,38 @@ def test_equipment_cart_smaller_than_bed():
         min_hits=1,
         allow_merged_detection=False,
         allow_pseudo_bed=False,
-        bed_min_area_ratio=0.028,
-        bed_min_width_ratio=0.14,
-        bed_min_height_ratio=0.055,
         reject_small_bed_as_equipment=True,
-        equipment_relative_area_max=0.60,
+        demote_bed_without_patient=True,
     )
     f.bind_class_ids(bed_class_ids=(59,), person_class_ids=(0,), equipment_class_ids=(20,))
     big_bed = Detection(1, 59, 0.9, (80, 200, 620, 400))  # large stretcher
     small_cart = Detection(8, 59, 0.8, (700, 300, 820, 390))  # small cart, same bed class
+    square_cart = Detection(7, 59, 0.82, (400, 240, 560, 390))  # mid square cart w/o patient
     equip_cls = Detection(9, 20, 0.85, (100, 300, 220, 400))  # explicit equipment class
     head = Detection(2, 0, 0.7, (140, 240, 210, 300))
 
-    roles = f.classify_roles([big_bed, small_cart, equip_cls, head], 960, 540)
+    roles = f.classify_roles([big_bed, small_cart, square_cart, equip_cls, head], 960, 540)
     assert roles[1] == "bed"
     assert roles[8] == "equipment_cart"
+    assert roles[7] == "equipment_cart"
     assert roles[9] == "equipment_cart"
     assert roles[2] == "patient_head"
 
-    pairs = f.associate([big_bed, small_cart, equip_cls, head], 960, 540)
+    pairs = f.associate([big_bed, small_cart, square_cart, equip_cls, head], 960, 540)
     assert len(pairs) == 1
     assert pairs[0].bed_track_id == 1
     assert pairs[0].patient_track_id == 2
     assert not f.should_draw_detection(59, small_cart.xyxy, 960, 540, hide_equipment_carts=True)
+
+
+def test_lonely_equipment_cart_not_bed():
+    """画面里只有器械车时，也不能标成病床。"""
+    f = TargetFilter(mode="bed_patient", allow_pseudo_bed=False, demote_bed_without_patient=True)
+    f.bind_class_ids(bed_class_ids=(59,), person_class_ids=(0,), equipment_class_ids=())
+    cart = Detection(3, 59, 0.88, (420, 250, 600, 400))  # ~aspect 1.2, mid size, no patient
+    roles = f.classify_roles([cart], 960, 540)
+    assert roles[3] == "equipment_cart"
+    assert f.associate([cart], 960, 540) == []
 
 
 def test_hide_upright_person_from_draw():
@@ -234,6 +243,7 @@ if __name__ == "__main__":
     test_upright_head_not_patient_head()
     test_tall_face_box_rejected_as_lying_head()
     test_equipment_cart_smaller_than_bed()
+    test_lonely_equipment_cart_not_bed()
     test_hide_upright_person_from_draw()
     test_pseudo_bed_from_head_when_stretcher_missing()
     test_open_vocab_class_binding()

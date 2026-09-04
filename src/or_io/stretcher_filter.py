@@ -140,16 +140,23 @@ class TargetFilter:
     accept_bed_class: bool = True
     person_class_id: int = 0  # 兼容旧单 id
     person_class_ids: Tuple[int, ...] = (0,)
-    # 透视下推床可能接近正方形，不宜过严；但须大于器械推车
-    bed_min_aspect_wh: float = 0.85
-    bed_min_area_ratio: float = 0.028
-    bed_min_width_ratio: float = 0.14
-    bed_min_height_ratio: float = 0.055
-    # 器械推车：整体更小；床类命中但尺寸不够 → equipment_cart
+    # 病床推车须明显大于器械推车，且更横向
+    bed_min_aspect_wh: float = 1.15
+    bed_min_area_ratio: float = 0.045
+    bed_min_width_ratio: float = 0.18
+    bed_min_height_ratio: float = 0.06
+    # 家具弱类（chair/couch/table）误检更多，门槛更高
+    furniture_bed_min_area_ratio: float = 0.065
+    furniture_bed_min_aspect_wh: float = 1.30
+    # 器械推车：专用类，或床状但更小/更方
     equipment_class_ids: Tuple[int, ...] = ()
-    equipment_max_area_ratio: float = 0.024
-    equipment_relative_area_max: float = 0.60  # 相对同框最大床状目标
+    equipment_max_area_ratio: float = 0.055
+    equipment_relative_area_max: float = 0.72  # 相对同框最大床状目标
     reject_small_bed_as_equipment: bool = True
+    # 无躺着患者头的中小型床状目标 → 器械车（空病床若很大且横向可保留）
+    demote_bed_without_patient: bool = True
+    empty_stretcher_min_area_ratio: float = 0.08
+    empty_stretcher_min_aspect_wh: float = 1.45
 
     min_pair_iou: float = 0.01
     max_center_dist_ratio: float = 0.28
@@ -221,14 +228,19 @@ class TargetFilter:
             accept_bed_class=bool(st.get("accept_bed_class", True)),
             person_class_id=int(person_ids[0]) if person_ids else 0,
             person_class_ids=tuple(int(x) for x in person_ids),
-            bed_min_aspect_wh=float(st.get("bed_min_aspect_wh", 0.85)),
-            bed_min_area_ratio=float(st.get("bed_min_area_ratio", 0.028)),
-            bed_min_width_ratio=float(st.get("bed_min_width_ratio", 0.14)),
-            bed_min_height_ratio=float(st.get("bed_min_height_ratio", 0.055)),
+            bed_min_aspect_wh=float(st.get("bed_min_aspect_wh", 1.15)),
+            bed_min_area_ratio=float(st.get("bed_min_area_ratio", 0.045)),
+            bed_min_width_ratio=float(st.get("bed_min_width_ratio", 0.18)),
+            bed_min_height_ratio=float(st.get("bed_min_height_ratio", 0.06)),
+            furniture_bed_min_area_ratio=float(st.get("furniture_bed_min_area_ratio", 0.065)),
+            furniture_bed_min_aspect_wh=float(st.get("furniture_bed_min_aspect_wh", 1.30)),
             equipment_class_ids=tuple(int(x) for x in (st.get("equipment_class_ids") or [])),
-            equipment_max_area_ratio=float(st.get("equipment_max_area_ratio", 0.024)),
-            equipment_relative_area_max=float(st.get("equipment_relative_area_max", 0.60)),
+            equipment_max_area_ratio=float(st.get("equipment_max_area_ratio", 0.055)),
+            equipment_relative_area_max=float(st.get("equipment_relative_area_max", 0.72)),
             reject_small_bed_as_equipment=bool(st.get("reject_small_bed_as_equipment", True)),
+            demote_bed_without_patient=bool(st.get("demote_bed_without_patient", True)),
+            empty_stretcher_min_area_ratio=float(st.get("empty_stretcher_min_area_ratio", 0.08)),
+            empty_stretcher_min_aspect_wh=float(st.get("empty_stretcher_min_aspect_wh", 1.45)),
             min_pair_iou=float(st.get("min_pair_iou", 0.01)),
             max_center_dist_ratio=float(st.get("max_center_dist_ratio", 0.28)),
             allow_center_in_bed=bool(st.get("allow_center_in_bed", True)),
@@ -294,16 +306,30 @@ class TargetFilter:
         self._hits.clear()
         self._pair_grace.clear()
 
-    def _bed_size_ok(self, xyxy: Sequence[float], frame_w: int, frame_h: int) -> bool:
-        """病床推车尺寸门槛（器械推车通常达不到）。"""
+    def _bed_size_ok(
+        self,
+        class_id: int,
+        xyxy: Sequence[float],
+        frame_w: int,
+        frame_h: int,
+    ) -> bool:
+        """病床推车尺寸门槛（器械推车通常更小、更方）。"""
         w, h = _wh(xyxy)
-        if _area_ratio(xyxy, frame_w, frame_h) < self.bed_min_area_ratio:
+        area = _area_ratio(xyxy, frame_w, frame_h)
+        aspect = _aspect_wh(xyxy)
+        min_area = self.bed_min_area_ratio
+        min_aspect = self.bed_min_aspect_wh
+        # COCO 家具弱类更容易把器械车检成 bed/couch/table
+        if int(class_id) in self.extra_bed_like_ids and int(class_id) not in self.bed_class_ids:
+            min_area = max(min_area, self.furniture_bed_min_area_ratio)
+            min_aspect = max(min_aspect, self.furniture_bed_min_aspect_wh)
+        if area < min_area:
             return False
         if w / max(frame_w, 1) < self.bed_min_width_ratio:
             return False
         if h / max(frame_h, 1) < self.bed_min_height_ratio:
             return False
-        if _aspect_wh(xyxy) < self.bed_min_aspect_wh:
+        if aspect < min_aspect:
             return False
         return True
 
@@ -320,7 +346,7 @@ class TargetFilter:
             return False
         if xyxy is None or frame_w <= 0 or frame_h <= 0:
             return True
-        return self._bed_size_ok(xyxy, frame_w, frame_h)
+        return self._bed_size_ok(cid, xyxy, frame_w, frame_h)
 
     def is_equipment_cart(
         self,
@@ -331,24 +357,46 @@ class TargetFilter:
         *,
         largest_bed_area: float | None = None,
     ) -> bool:
-        """器械推车：专用类，或床状目标但整体明显更小。"""
+        """器械推车：专用类，或床状目标但更小/更方。"""
         cid = int(class_id)
         if cid == PSEUDO_BED_CLASS_ID:
             return False
         area = _area_ratio(xyxy, frame_w, frame_h)
+        aspect = _aspect_wh(xyxy)
+        # 专用器械车提示：一律器械车（不参与入出室）
         if self.is_equipment_class(cid):
-            # 专用器械车提示：默认都算器械车；若异常巨大则仍可当床（少见）
-            return area <= max(self.equipment_max_area_ratio * 2.5, self.bed_min_area_ratio)
+            return True
         if not self.reject_small_bed_as_equipment:
             return False
         if not self.is_bed_like_class(cid):
             return False
-        # 床类命中但尺寸不够 → 器械推车/小车
-        if not self._bed_size_ok(xyxy, frame_w, frame_h):
+        # 尺寸/横向不够 → 器械推车
+        if not self._bed_size_ok(cid, xyxy, frame_w, frame_h):
             return True
-        # 同框相对更小：明显小于最大病床状目标
+        # 偏方正且未达到「明确大病床」→ 更像器械车
+        if aspect < self.bed_min_aspect_wh + 0.15 and area < self.equipment_max_area_ratio * 1.4:
+            return True
+        # 同框相对更小
         if largest_bed_area is not None and largest_bed_area > 0:
-            if area < largest_bed_area * self.equipment_relative_area_max and area <= self.bed_min_area_ratio * 1.35:
+            if area < largest_bed_area * self.equipment_relative_area_max:
+                return True
+        return False
+
+    def _has_patient_on_bed(
+        self,
+        bed_xyxy: Sequence[float],
+        detections: Sequence[Detection],
+        roles: Dict[int, str],
+        frame_w: int,
+        frame_h: int,
+    ) -> bool:
+        for d in detections:
+            role = roles.get(d.track_id)
+            if role not in ("patient_head", "lying_patient"):
+                continue
+            if _patient_center_in_bed(d.xyxy, bed_xyxy, margin=self.head_in_bed_margin):
+                return True
+            if _iou(d.xyxy, bed_xyxy) >= 0.05:
                 return True
         return False
 
@@ -506,7 +554,6 @@ class TargetFilter:
     ) -> Dict[int, str]:
         """分类：直立全身 → 躺头；再按尺寸区分病床推车 vs 器械推车。"""
         standing = self.collect_standing_boxes(detections, frame_w, frame_h)
-        # 先估同框最大「床状」面积，用于相对尺寸区分器械车
         bed_like_areas = [
             _area_ratio(d.xyxy, frame_w, frame_h)
             for d in detections
@@ -524,7 +571,7 @@ class TargetFilter:
             )
             for d in detections
         }
-        # 第二遍：若已有明确大病床，把明显更小的床状目标降为器械车
+        # 相对尺寸：明显小于最大病床 → 器械车
         bed_areas = [
             _area_ratio(d.xyxy, frame_w, frame_h)
             for d in detections
@@ -538,8 +585,24 @@ class TargetFilter:
                 if int(d.class_id) == PSEUDO_BED_CLASS_ID:
                     continue
                 ar = _area_ratio(d.xyxy, frame_w, frame_h)
-                if ar < max_bed * self.equipment_relative_area_max and ar < self.bed_min_area_ratio * 1.5:
+                if ar < max_bed * self.equipment_relative_area_max:
                     roles[d.track_id] = "equipment_cart"
+
+        # 无躺着患者证据的中小型「床」→ 器械车（避免器械车被标成 BED）
+        if self.demote_bed_without_patient:
+            for d in detections:
+                if roles.get(d.track_id) != "bed":
+                    continue
+                if int(d.class_id) == PSEUDO_BED_CLASS_ID:
+                    continue
+                if self._has_patient_on_bed(d.xyxy, detections, roles, frame_w, frame_h):
+                    continue
+                ar = _area_ratio(d.xyxy, frame_w, frame_h)
+                aspect = _aspect_wh(d.xyxy)
+                # 明确的大空病床推车可保留为 bed；其余无患者床状目标当器械车
+                if ar >= self.empty_stretcher_min_area_ratio and aspect >= self.empty_stretcher_min_aspect_wh:
+                    continue
+                roles[d.track_id] = "equipment_cart"
         return roles
 
     def _nearby_staff(

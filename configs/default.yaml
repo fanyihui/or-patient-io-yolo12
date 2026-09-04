@@ -66,14 +66,20 @@ target:
     accept_bed_class: true
     bed_class_ids: [59]
     extra_bed_like_ids: [56, 57, 60]
-    # 病床推车尺寸门槛（器械推车通常更小，达不到）
-    bed_min_aspect_wh: 0.75
-    bed_min_area_ratio: 0.028
-    bed_min_width_ratio: 0.14
-    bed_min_height_ratio: 0.055
+    # 病床推车尺寸门槛（器械推车更小/更方，达不到）
+    bed_min_aspect_wh: 1.15
+    bed_min_area_ratio: 0.045
+    bed_min_width_ratio: 0.18
+    bed_min_height_ratio: 0.06
+    furniture_bed_min_area_ratio: 0.065
+    furniture_bed_min_aspect_wh: 1.30
     reject_small_bed_as_equipment: true
-    equipment_max_area_ratio: 0.024
-    equipment_relative_area_max: 0.60
+    equipment_max_area_ratio: 0.055
+    equipment_relative_area_max: 0.72
+    # 无躺着患者头的中小型床状目标降为器械车
+    demote_bed_without_patient: true
+    empty_stretcher_min_area_ratio: 0.08
+    empty_stretcher_min_aspect_wh: 1.45
 
     patient_appearance: covered_head
     max_patient_to_bed_area: 0.75

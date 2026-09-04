@@ -26,7 +26,8 @@ target:
     allow_pseudo_bed: true
     patient_appearance: covered_head
     reject_upright_heads: true
-    bed_min_area_ratio: 0.028   # 病床更大；更小的当作器械车
+    bed_min_area_ratio: 0.045   # 病床更大；更小/更方的当作器械车
+    demote_bed_without_patient: true
 output:
   hide_standing_staff: true
   hide_equipment_carts: true
