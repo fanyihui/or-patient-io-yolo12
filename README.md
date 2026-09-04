@@ -71,7 +71,10 @@ model:
 target:
   mode: bed_patient
   stretcher:
-    lying_aspect_wh: 1.10
+    lying_aspect_wh: 1.45
+    lying_max_height_ratio: 0.28
+    reject_lying_near_equipment: true
+    staff_push_max_aspect_wh: 1.35
     allow_merged_detection: true
 zone:
   mode: roi
