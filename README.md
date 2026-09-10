@@ -36,11 +36,22 @@ output:
 
 ## 快速开始
 
+### Web 应用（推荐）：接入视频 → 截图标注门 ROI → 实时入室事件
+
 ```bash
 pip install -r requirements.txt
-# 有 NVIDIA GPU 时请安装 CUDA 版 PyTorch，例如：
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+python scripts/run_app.py --host 0.0.0.0 --port 8787
+# 浏览器打开 http://127.0.0.1:8787/
+```
 
+流程：
+1. 填写一路视频源（RTSP / HTTP / 摄像头 `0` / 文件路径）并连接  
+2. **截图**冻结画面，点选**门外 ROI**与**门内 ROI**，保存坐标到 `configs/sites/`  
+3. **开始监测**：识别推着病人的病床从门外进入门内，右侧实时显示入室时间  
+
+事件与 ROI 会写入 `outputs/app_*`（`events.jsonl` / `events.csv` / `door_roi.yaml`）。
+
+```bash
 python scripts/generate_synthetic_video.py
 python scripts/run_demo.py --source data/samples/or_door_synthetic.mp4 --output outputs/demo
 # 强制 GPU：

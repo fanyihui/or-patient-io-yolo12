@@ -1,0 +1,177 @@
+model:
+  backend: fusion
+  primary_backend: world
+  weights: yolov8s-worldv2.pt
+  secondary_weights: yolo12n.pt
+  secondary_conf: 0.08
+  conf: 0.08
+  iou: 0.5
+  imgsz: 960
+  device: auto
+  prompts:
+  - person
+  - human head
+  - face
+  - patient
+  - hospital bed
+  - stretcher
+  - gurney
+  - medical bed
+  - hospital stretcher
+  - wheeled bed
+  - bed with rails
+  - bed
+  - mattress
+  - instrument cart
+  - equipment cart
+  - medical cart
+  - utility cart
+  - mayo stand
+  bed_prompts:
+  - hospital bed
+  - stretcher
+  - gurney
+  - medical bed
+  - hospital stretcher
+  - wheeled bed
+  - bed with rails
+  - bed
+  - mattress
+  equipment_prompts:
+  - instrument cart
+  - equipment cart
+  - medical cart
+  - utility cart
+  - mayo stand
+  person_prompts:
+  - person
+  - human head
+  - face
+  - patient
+  classes:
+  - 0
+  - 56
+  - 57
+  - 59
+  - 60
+tracker:
+  config: configs/bytetrack.yaml
+target:
+  mode: bed_patient
+  stretcher:
+    accept_bed_class: true
+    bed_class_ids:
+    - 59
+    extra_bed_like_ids:
+    - 56
+    - 57
+    - 60
+    bed_min_aspect_wh: 1.15
+    bed_min_area_ratio: 0.045
+    bed_min_width_ratio: 0.18
+    bed_min_height_ratio: 0.06
+    furniture_bed_min_area_ratio: 0.065
+    furniture_bed_min_aspect_wh: 1.3
+    reject_small_bed_as_equipment: true
+    equipment_max_area_ratio: 0.055
+    equipment_relative_area_max: 0.72
+    demote_bed_without_patient: true
+    empty_stretcher_min_area_ratio: 0.08
+    empty_stretcher_min_aspect_wh: 1.45
+    patient_appearance: covered_head
+    max_patient_to_bed_area: 0.75
+    head_max_area_ratio: 0.25
+    head_min_area_ratio: 0.0006
+    head_in_bed_margin: 0.28
+    reject_upright_heads: true
+    standing_head_upper_ratio: 0.55
+    lying_head_min_aspect_wh: 0.65
+    staff_max_aspect_wh: 0.9
+    staff_push_max_aspect_wh: 1.35
+    staff_min_height_ratio: 0.22
+    allow_pseudo_bed: true
+    pseudo_bed_require_staff: false
+    pseudo_bed_staff_dist_ratio: 0.32
+    pseudo_bed_width_scale: 4.8
+    pseudo_bed_height_scale: 2.6
+    lying_aspect_wh: 1.45
+    lying_area_ratio: 0.02
+    lying_max_height_ratio: 0.28
+    reject_lying_near_equipment: true
+    lying_equipment_iou_min: 0.08
+    lying_equipment_center_dist_ratio: 0.12
+    min_hits: 2
+    min_pair_iou: 0.01
+    max_center_dist_ratio: 0.32
+    allow_center_in_bed: true
+    pair_grace_frames: 20
+    allow_merged_detection: true
+    merged_min_aspect_wh: 1.55
+    merged_min_area_ratio: 0.04
+zone:
+  mode: roi
+  rois:
+    outside:
+      polygon:
+      - - 0.078659
+        - 0.102536
+      - - 0.324511
+        - 0.102536
+      - - 0.324511
+        - 0.611128
+      - - 0.078659
+        - 0.611128
+      label: 门外/走廊
+    inside:
+      polygon:
+      - - 0.501525
+        - 0.102536
+      - - 0.781351
+        - 0.102536
+      - - 0.781351
+        - 0.611128
+      - - 0.501525
+        - 0.611128
+      label: 手术室内
+door_line:
+  p1:
+  - 0.5
+  - 0.15
+  p2:
+  - 0.5
+  - 0.9
+  outside_side: left
+events:
+  debounce_frames: 15
+  min_crossing_disp: 0.0
+stream:
+  reconnect: true
+  reconnect_delay_sec: 2.0
+  max_reconnect_attempts: 0
+  buffer_size: 1
+  open_timeout_ms: 8000
+  read_timeout_ms: 5000
+  drop_pending: true
+  max_pending_grabs: 8
+  target_fps: 10
+  status_every_sec: 10
+  ffmpeg_options: rtsp_transport;tcp|fflags;nobuffer|flags;low_delay
+output:
+  save_video: true
+  video_segment_minutes: 30
+  save_events_json: true
+  save_events_jsonl: true
+  save_events_csv: true
+  events_flush_every: 1
+  draw_tracks: true
+  draw_zone: true
+  draw_door_line: true
+  hide_standing_staff: true
+  hide_equipment_carts: true
+roi_meta:
+  saved_at: '2026-09-10T07:15:52.337649+00:00'
+  frame_size:
+    width: 960
+    height: 540
+  source: /agent/outputs/_demo_clip/or_preview.mp4
+  site: or_door

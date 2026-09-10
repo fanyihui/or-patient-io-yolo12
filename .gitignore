@@ -14,3 +14,4 @@ data/samples/*.png
 *.egg-info/
 dist/
 build/
+configs/sites/unit_test*

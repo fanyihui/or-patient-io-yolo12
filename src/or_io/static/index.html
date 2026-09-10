@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OR Gate · 手术室入室监测</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <header class="top">
+    <div class="brand-block">
+      <p class="brand">OR Gate</p>
+      <p class="brand-sub">手术室入室监测</p>
+    </div>
+    <div class="status-pill" id="statusPill">未连接</div>
+  </header>
+
+  <main class="stage">
+    <section class="viewport" aria-label="视频与标注">
+      <div class="canvas-wrap" id="canvasWrap">
+        <img id="videoView" alt="视频预览" draggable="false" />
+        <canvas id="roiCanvas"></canvas>
+        <div class="viewport-hint" id="viewportHint">接入一路视频后开始</div>
+      </div>
+      <div class="viewport-meta">
+        <span id="sourceMeta">源：—</span>
+        <span id="sizeMeta">—</span>
+        <span id="modeMeta">模式：预览</span>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <nav class="steps" aria-label="流程">
+        <button type="button" class="step active" data-step="1">1 接入</button>
+        <button type="button" class="step" data-step="2">2 标注 ROI</button>
+        <button type="button" class="step" data-step="3">3 实时监测</button>
+      </nav>
+
+      <section class="card-free step-pane active" data-pane="1">
+        <h2>接入一路视频</h2>
+        <p class="help">支持 RTSP / HTTP / 本地摄像头索引 / 视频文件路径。</p>
+        <label class="field">
+          <span>视频源</span>
+          <input id="sourceInput" type="text" placeholder="rtsp://user:pass@ip:554/stream 或 0" autocomplete="off" />
+        </label>
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="btnConnect">连接</button>
+          <button type="button" class="btn ghost" id="btnDisconnect">断开</button>
+        </div>
+      </section>
+
+      <section class="card-free step-pane" data-pane="2">
+        <h2>截图并标注门口</h2>
+        <p class="help">先截图冻结画面，再依次点选<strong>门外</strong>与<strong>门内</strong>多边形（每区 ≥3 点）。</p>
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="btnSnapshot">截图</button>
+          <button type="button" class="btn ghost" id="btnClearRoi">清空点</button>
+        </div>
+        <div class="roi-tools">
+          <label class="seg">
+            <input type="radio" name="roiLayer" value="outside" checked />
+            <span>门外 ROI</span>
+          </label>
+          <label class="seg">
+            <input type="radio" name="roiLayer" value="inside" />
+            <span>门内 ROI</span>
+          </label>
+        </div>
+        <label class="field">
+          <span>站点名称</span>
+          <input id="siteName" type="text" value="or_door" />
+        </label>
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="btnSaveRoi">保存门 ROI</button>
+        </div>
+        <p class="tiny" id="roiInfo">门外 0 点 · 门内 0 点</p>
+      </section>
+
+      <section class="card-free step-pane" data-pane="3">
+        <h2>实时识别入室</h2>
+        <p class="help">检测「推着病人的病床」从门外 ROI 进入门内 ROI，并记录时间。</p>
+        <label class="field">
+          <span>推理设备</span>
+          <select id="deviceSelect">
+            <option value="auto">auto</option>
+            <option value="0">GPU 0</option>
+            <option value="cpu">CPU</option>
+          </select>
+        </label>
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="btnStart">开始监测</button>
+          <button type="button" class="btn danger" id="btnStop">停止</button>
+        </div>
+        <div class="stats" id="statsBox">
+          <div><em>入室</em><strong id="statEnter">0</strong></div>
+          <div><em>出室</em><strong id="statExit">0</strong></div>
+          <div><em>帧</em><strong id="statFrames">0</strong></div>
+        </div>
+      </section>
+
+      <section class="events">
+        <div class="events-head">
+          <h2>事件记录</h2>
+          <button type="button" class="btn ghost mini" id="btnRefreshEvents">刷新</button>
+        </div>
+        <ul id="eventList" class="event-list">
+          <li class="empty">尚无入/出室事件</li>
+        </ul>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
