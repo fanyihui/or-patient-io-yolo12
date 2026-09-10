@@ -47,6 +47,35 @@ python scripts/run_demo.py --source data/samples/or_door_synthetic.mp4 --output 
 python scripts/run_demo.py --source your.mp4 --output outputs/demo --device 0
 ```
 
+### 流媒体实时识别与记录
+
+```bash
+# RTSP 摄像头 / NVR
+python scripts/run_stream.py --source "rtsp://user:pass@192.168.1.10:554/Streaming/Channels/101" --device 0
+
+# HTTP MJPEG / HLS
+python scripts/run_stream.py --source "http://192.168.1.10/video.mjpg"
+python scripts/run_stream.py --source "https://example.com/live/index.m3u8"
+
+# 本地摄像头
+python scripts/run_stream.py --source 0 --preview
+
+# 降负载保实时（默认 target_fps=10），只记事件不写视频
+python scripts/run_stream.py --source "rtsp://..." --target-fps 8 --no-video
+```
+
+输出目录（默认 `outputs/live_<时间>_<源>`）实时落盘：
+
+| 文件 | 说明 |
+|------|------|
+| `events.jsonl` | 每条入/出室事件立即追加 |
+| `events.csv` | 表格追加，便于 Excel |
+| `events.json` | 汇总快照（持续刷新） |
+| `annotated*.mp4` | 标注视频（可按 `video_segment_minutes` 切段） |
+| `summary.json` | 结束时统计 |
+
+断流默认自动重连；`Ctrl+C` 优雅退出并落盘。
+
 排查漏检（打印每类检出次数，并可选保存叠加图）：
 
 ```bash
@@ -68,6 +97,14 @@ model:
 ## 配置要点
 
 ```yaml
+stream:
+  target_fps: 10
+  drop_pending: true
+  reconnect: true
+output:
+  save_events_jsonl: true
+  save_events_csv: true
+  video_segment_minutes: 30
 target:
   mode: bed_patient
   stretcher:
@@ -85,7 +122,7 @@ zone:
 ```
 configs/          # 默认配置
 src/or_io/        # 检测流水线
-scripts/          # 合成视频 / 推理 / 标定 / 探测
+scripts/          # 合成视频 / 离线推理 / 实时流 / 标定 / 探测
 tests/            # 单元测试
 ```
 

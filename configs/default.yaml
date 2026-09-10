@@ -144,9 +144,29 @@ events:
   debounce_frames: 15
   min_crossing_disp: 0.0
 
+# 实时流（RTSP/HTTP/摄像头）—— scripts/run_stream.py
+stream:
+  reconnect: true
+  reconnect_delay_sec: 2.0
+  max_reconnect_attempts: 0   # 0=无限重连
+  buffer_size: 1              # 低延迟
+  open_timeout_ms: 8000
+  read_timeout_ms: 5000
+  drop_pending: true          # 处理跟不上时丢旧帧保实时
+  max_pending_grabs: 8
+  target_fps: 10              # 处理帧率上限；0=尽量每帧
+  status_every_sec: 10
+  ffmpeg_options: "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+
 output:
   save_video: true
+  # 实时流时可按时长切段（分钟）；0=单文件 annotated.mp4
+  video_segment_minutes: 30
   save_events_json: true
+  # 实时追加（流模式默认开启）
+  save_events_jsonl: true
+  save_events_csv: true
+  events_flush_every: 1
   draw_tracks: true
   draw_zone: true
   draw_door_line: true

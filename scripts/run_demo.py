@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""运行手术室入/出室检测流水线。"""
+"""运行手术室入/出室检测流水线（文件或流地址）。
+
+实时流推荐用 scripts/run_stream.py（断线重连 + 事件即时落盘）。
+"""
 
 from __future__ import annotations
 
@@ -12,13 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from or_io.pipeline import ORIOPipeline, load_config  # noqa: E402
+from or_io.stream import is_stream_source  # noqa: E402
 
 
 def resolve_device(requested: str | None) -> str | int:
     """auto / None → GPU 0（若可用）否则 cpu；显式值原样返回。"""
     value = (requested or "auto").strip().lower()
     if value not in ("auto", ""):
-        # "0" / "0,1" 保持字符串也可被 ultralytics 接受；单卡数字更直观
         if value.isdigit():
             return int(value)
         return value
@@ -63,6 +66,9 @@ def main() -> None:
         cfg.setdefault("target", {})["mode"] = args.target_mode
 
     print(f"[device] model.device = {cfg['model']['device']!r}")
+    if is_stream_source(args.source):
+        print("[hint] 检测到流地址，将走实时模式（等同 run_stream.py）")
+
     pipe = ORIOPipeline(cfg, project_root=ROOT)
     summary = pipe.process_video(args.source, args.output, max_frames=args.max_frames)
 
@@ -72,6 +78,7 @@ def main() -> None:
     print("\n=== 运行结果 ===")
     print(f"device: {cfg['model']['device']}")
     print(f"target: {summary.get('target_mode')}")
+    print(f"live:   {summary.get('live')}")
     print(f"enter: {summary['enters']}  exit: {summary['exits']}")
     print(f"events: {summary['events_path']}")
     print(f"video:  {summary['video_path']}")
