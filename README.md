@@ -47,10 +47,11 @@ python scripts/run_app.py --host 0.0.0.0 --port 8787
 
 流程：
 1. 填写一路视频源（RTSP / HTTP / 摄像头 `0` / 文件路径）并连接  
-2. **截图**冻结画面，点选**门外 ROI**与**门内 ROI**，保存坐标到 `configs/sites/`  
-3. **开始监测**：识别推着病人的病床从门外进入门内，右侧实时显示入室时间  
+2. **截图**冻结画面，点选**门外 / 门内**（入室）与**固定手术床** ROI，保存到 `configs/sites/`  
+3. **开始监测**：推床入室 + 患者从推床转移到手术床，右侧实时显示时间  
 
 事件与 ROI 会写入 `outputs/app_*`（`events.jsonl` / `events.csv` / `door_roi.yaml`）。
+事件类型：`enter` / `exit` / `transfer_to_or_bed`。
 
 ```bash
 python scripts/generate_synthetic_video.py
@@ -109,6 +110,12 @@ model:
 ## 配置要点
 
 ```yaml
+or_bed:
+  polygon: [[0.35,0.40],[0.72,0.40],[0.72,0.78],[0.35,0.78]]
+transfer:
+  enabled: true
+  confirm_frames: 8
+  require_stretcher_nearby: true
 stream:
   target_fps: 10
   drop_pending: true
