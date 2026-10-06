@@ -13,12 +13,13 @@ import cv2
 import numpy as np
 import yaml
 
-from .events import EventManager, IOEvent, LiveEventRecorder
+from .events import EventManager, IOEvent, LiveEventRecorder, event_counts
 from .model_loader import load_detector
 from .stream import StreamConfig, is_stream_source, iter_frames, normalize_source, source_label
 from .stretcher_filter import PSEUDO_BED_CLASS_ID, BedPatientPair, Detection, TargetFilter
+from .transfer import TransferMonitor, poly_from_normalized, transfer_config_from_dict
 from .video_writer import AnnotatedVideoWriter
-from .visualize import draw_event_banner, draw_hud, draw_pair, draw_track, draw_zone
+from .visualize import draw_event_banner, draw_hud, draw_or_bed, draw_pair, draw_track, draw_zone
 from .zones import DoorLine, DualROIZones, Side, build_zone, side_transition
 
 Zone = Union[DoorLine, DualROIZones]
@@ -109,6 +110,26 @@ class ORIOPipeline:
         self._live_recorder: Optional[LiveEventRecorder] = None
         self._stop_requested = False
         self._on_event_hook: Optional[Callable[[IOEvent], None]] = None
+
+        tr_cfg = transfer_config_from_dict(config.get("transfer") or config.get("or_bed_transfer"))
+        self.transfer = TransferMonitor(cfg=tr_cfg, source="")
+        or_bed = config.get("or_bed") or {}
+        self._or_bed_norm = or_bed.get("polygon")
+        self._or_bed_poly_size: Optional[Tuple[int, int]] = None
+
+    def _ensure_or_bed(self, frame_w: int, frame_h: int) -> None:
+        if not self._or_bed_norm:
+            self.transfer.set_or_bed_poly(None)
+            return
+        if self._or_bed_poly_size == (frame_w, frame_h) and self.transfer.or_bed_poly is not None:
+            return
+        try:
+            poly = poly_from_normalized(self._or_bed_norm, frame_w, frame_h)
+            self.transfer.set_or_bed_poly(poly)
+            self._or_bed_poly_size = (frame_w, frame_h)
+        except Exception as e:  # noqa: BLE001
+            print(f"[or_bed] invalid ROI: {e}")
+            self.transfer.set_or_bed_poly(None)
 
     def request_stop(self) -> None:
         self._stop_requested = True
@@ -322,6 +343,9 @@ class ORIOPipeline:
 
         if out_cfg.get("draw_door_line", True) or out_cfg.get("draw_zone", True):
             draw_zone(frame, zone)
+        self._ensure_or_bed(width, height)
+        if out_cfg.get("draw_or_bed", True) and self.transfer.or_bed_poly is not None:
+            draw_or_bed(frame, self.transfer.or_bed_poly)
 
         dets = self._boxes_to_detections(boxes)
         if self.detector.backend == "fusion":
@@ -332,6 +356,8 @@ class ORIOPipeline:
         if self.target_filter.allow_pseudo_bed:
             roles_pre = self.target_filter.classify_roles(dets, width, height)
             existing = [d for d in dets if roles_pre.get(d.track_id) == "bed"]
+            # 伪床不要盖在固定手术床上
+            existing = [d for d in existing if not self.transfer.is_fixed_or_bed_box(d.xyxy)]
             dets = list(dets) + self.target_filter.synthesize_pseudo_beds(
                 dets, width, height, existing_beds=existing
             )
@@ -339,20 +365,25 @@ class ORIOPipeline:
 
         roles = self.target_filter.classify_roles(dets, width, height)
         for d in dets:
+            if roles.get(d.track_id) == "bed" and self.transfer.is_fixed_or_bed_box(d.xyxy):
+                roles[d.track_id] = "or_bed"
             role = roles.get(d.track_id, "other")
             role_hist[role] = role_hist.get(role, 0) + 1
 
         paired_ids: set[int] = set()
+        pairs: List[BedPatientPair] = []
         if target_mode == "bed_patient":
             pairs = self.target_filter.associate(dets, width, height, frame_idx)
-            for pair in pairs:
+            # 固定手术床上的配对不参与入/出室（那是转移场景）
+            door_pairs = [p for p in pairs if not self.transfer.is_fixed_or_bed_box(p.bed_xyxy)]
+            for pair in door_pairs:
                 confirmed = self.target_filter.confirm_pair(pair)
                 paired_ids.add(pair.bed_track_id)
                 paired_ids.add(pair.patient_track_id)
                 if out_cfg.get("draw_tracks", True):
                     draw_pair(frame, pair, zone.classify(*pair.centroid), confirmed)
                 self._handle_pair_event(pair, confirmed, frame_idx, fps, frame_diag, zone)
-            self.target_filter.mark_unseen_beds([p.event_track_id for p in pairs])
+            self.target_filter.mark_unseen_beds([p.event_track_id for p in door_pairs])
 
             if out_cfg.get("draw_tracks", True):
                 for d in dets:
@@ -367,7 +398,7 @@ class ORIOPipeline:
                         hide_equipment_carts=hide_equipment,
                         draw_roles=draw_roles,
                         standing_boxes=standing_boxes,
-                    ):
+                    ) and roles.get(d.track_id) != "or_bed":
                         continue
                     role = roles.get(d.track_id, "other")
                     cx = (d.xyxy[0] + d.xyxy[2]) * 0.5
@@ -379,7 +410,7 @@ class ORIOPipeline:
                         d.xyxy,
                         d.conf,
                         side,
-                        False,
+                        role == "or_bed",
                         role=role,
                         class_name=self._name_of(d.class_id),
                     )
@@ -449,12 +480,40 @@ class ORIOPipeline:
                             )
                 self._prev_centroid[d.track_id] = (cx, cy)
 
+        # 推床 → 固定手术床 转移事件
+        self.transfer.source = self.event_manager.source
+        movable_pairs = [p for p in pairs if not self.transfer.is_fixed_or_bed_box(p.bed_xyxy)]
+        transfer_evt = self.transfer.update(
+            frame_idx=frame_idx,
+            fps=fps,
+            frame_w=width,
+            frame_h=height,
+            detections=dets,
+            roles=roles,
+            pairs=movable_pairs,
+        )
+        if transfer_evt is not None:
+            self.event_manager.events.append(transfer_evt)
+            self._emit_event(transfer_evt)
+            print(
+                f"[TRANSFER_TO_OR_BED] patient={transfer_evt.track_id} "
+                f"wall={transfer_evt.wall_time_iso} video_t={transfer_evt.video_time_sec:.2f}s "
+                f"frame={transfer_evt.frame_idx}"
+            )
+
         hold = 45
         visible = [e for fidx, e in self._recent_events if frame_idx - fidx <= hold]
         draw_event_banner(frame, visible)
-        n_enter = sum(1 for e in self.event_manager.events if e.event == "enter")
-        n_exit = sum(1 for e in self.event_manager.events if e.event == "exit")
-        draw_hud(frame, frame_idx, fps, n_enter, n_exit, target_mode=target_mode)
+        counts = event_counts(self.event_manager.events)
+        draw_hud(
+            frame,
+            frame_idx,
+            fps,
+            counts["enters"],
+            counts["exits"],
+            target_mode=target_mode,
+            n_transfer=counts["transfers"],
+        )
         return frame
 
     def _build_summary(
@@ -470,6 +529,7 @@ class ORIOPipeline:
         source: str,
         live: bool,
     ) -> dict:
+        counts = event_counts(self.event_manager.events)
         return {
             "frames": frame_idx,
             "fps_process": round(frame_idx / max(elapsed, 1e-6), 2),
@@ -481,8 +541,9 @@ class ORIOPipeline:
             "bed_class_ids": list(self.target_filter.bed_class_ids),
             "person_class_ids": list(self.target_filter.person_class_ids),
             "role_counts": role_hist,
-            "enters": sum(1 for e in self.event_manager.events if e.event == "enter"),
-            "exits": sum(1 for e in self.event_manager.events if e.event == "exit"),
+            "enters": counts["enters"],
+            "exits": counts["exits"],
+            "transfers": counts["transfers"],
             "events_path": str(events_path),
             "video_path": video_path,
             "source": source,
@@ -490,6 +551,7 @@ class ORIOPipeline:
             "started_at": getattr(self, "_run_started_at", None),
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "events": [e.to_dict() for e in self.event_manager.events],
+            "has_or_bed_roi": bool(self._or_bed_norm),
         }
 
     def process_video(

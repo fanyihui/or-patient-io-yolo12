@@ -240,6 +240,9 @@ h2 {
   gap: 0.45rem;
   margin: 0.75rem 0;
 }
+.roi-tools.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
 .seg {
   display: flex;
   align-items: center;
@@ -260,11 +263,14 @@ h2 {
 .seg:nth-child(2):has(input:checked) {
   background: rgba(61, 222, 162, 0.16);
 }
+.seg:nth-child(3):has(input:checked) {
+  background: rgba(255, 170, 40, 0.18);
+}
 .tiny { margin: 0.55rem 0 0; color: var(--muted); font-size: 0.8rem; }
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.5rem;
   margin-top: 0.85rem;
 }
@@ -326,6 +332,7 @@ h2 {
 }
 .event-list .tag.enter { background: rgba(61, 222, 162, 0.2); color: #8af0c6; }
 .event-list .tag.exit { background: rgba(228, 87, 77, 0.18); color: #ffb4ae; }
+.event-list .tag.transfer { background: rgba(255, 170, 40, 0.2); color: #ffd08a; }
 .event-list .when { color: var(--ink); font-weight: 600; }
 .event-list .meta { display: block; margin-top: 0.2rem; color: var(--muted); font-size: 0.78rem; }
 

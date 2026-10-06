@@ -25,8 +25,9 @@ class ConnectBody(BaseModel):
 
 
 class RoiBody(BaseModel):
-    outside: List[List[float]]
-    inside: List[List[float]]
+    outside: Optional[List[List[float]]] = None
+    inside: Optional[List[List[float]]] = None
+    or_bed: Optional[List[List[float]]] = None
     site_name: str = "or_door"
     already_normalized: bool = True
     save: bool = True
@@ -121,6 +122,7 @@ def create_app(project_root: Path | None = None, config_path: Path | None = None
             payload = session.set_roi(
                 body.outside,
                 body.inside,
+                or_bed=body.or_bed,
                 already_normalized=body.already_normalized,
                 site_name=body.site_name.strip() or "or_door",
                 save=body.save,
@@ -161,11 +163,15 @@ def create_app(project_root: Path | None = None, config_path: Path | None = None
     @app.get("/api/events")
     def events(limit: int = 200) -> dict:
         items = session.events[-max(1, limit) :]
+        from or_io.events import event_counts
+
+        counts = event_counts(session.events)
         return {
             "ok": True,
             "count": len(session.events),
-            "enters": sum(1 for e in session.events if e.get("event") == "enter"),
-            "exits": sum(1 for e in session.events if e.get("event") == "exit"),
+            "enters": counts["enters"],
+            "exits": counts["exits"],
+            "transfers": counts["transfers"],
             "events": list(reversed(items)),
         }
 

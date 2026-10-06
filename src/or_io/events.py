@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional, TextIO, Tuple
 
 
-EventType = Literal["enter", "exit"]
+EventType = Literal["enter", "exit", "transfer_to_or_bed"]
 
 
 @dataclass
@@ -33,6 +33,17 @@ class IOEvent:
         if not d.get("source"):
             d.pop("source", None)
         return d
+
+
+def event_counts(events: List[IOEvent] | List[dict]) -> Dict[str, int]:
+    def _name(e) -> str:
+        return e.event if hasattr(e, "event") else str(e.get("event", ""))
+
+    return {
+        "enters": sum(1 for e in events if _name(e) == "enter"),
+        "exits": sum(1 for e in events if _name(e) == "exit"),
+        "transfers": sum(1 for e in events if _name(e) == "transfer_to_or_bed"),
+    }
 
 
 @dataclass
@@ -87,10 +98,12 @@ class EventManager:
 
     def save_json(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        counts = event_counts(self.events)
         payload = {
             "count": len(self.events),
-            "enters": sum(1 for e in self.events if e.event == "enter"),
-            "exits": sum(1 for e in self.events if e.event == "exit"),
+            "enters": counts["enters"],
+            "exits": counts["exits"],
+            "transfers": counts["transfers"],
             "source": self.source or None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "events": [e.to_dict() for e in self.events],
@@ -187,10 +200,12 @@ class LiveEventRecorder:
                     self._write_snapshot(all_events)
 
     def _write_snapshot(self, events: List[IOEvent]) -> None:
+        counts = event_counts(events)
         payload = {
             "count": len(events),
-            "enters": sum(1 for e in events if e.event == "enter"),
-            "exits": sum(1 for e in events if e.event == "exit"),
+            "enters": counts["enters"],
+            "exits": counts["exits"],
+            "transfers": counts["transfers"],
             "source": self.source or None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "events": [e.to_dict() for e in events],

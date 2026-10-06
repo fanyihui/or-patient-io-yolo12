@@ -20,6 +20,9 @@ DEFAULT_WORLD_PROMPTS: List[str] = [
     "hospital stretcher",
     "wheeled bed",
     "bed with rails",
+    "operating table",
+    "surgical table",
+    "OR table",
     "bed",
     "mattress",
     "instrument cart",
@@ -29,7 +32,7 @@ DEFAULT_WORLD_PROMPTS: List[str] = [
     "mayo stand",
 ]
 
-# 病床 / 推床（整体更大）
+# 病床 / 推床（整体更大）+ 手术床提示（固定床主要靠 ROI）
 DEFAULT_BED_PROMPTS = (
     "hospital bed",
     "stretcher",
@@ -38,6 +41,9 @@ DEFAULT_BED_PROMPTS = (
     "hospital stretcher",
     "wheeled bed",
     "bed with rails",
+    "operating table",
+    "surgical table",
+    "OR table",
     "bed",
     "mattress",
 )

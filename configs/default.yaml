@@ -31,6 +31,9 @@ model:
     - hospital stretcher
     - wheeled bed
     - bed with rails
+    - operating table
+    - surgical table
+    - OR table
     - bed
     - mattress
     - instrument cart
@@ -46,6 +49,9 @@ model:
     - hospital stretcher
     - wheeled bed
     - bed with rails
+    - operating table
+    - surgical table
+    - OR table
     - bed
     - mattress
   equipment_prompts:
@@ -144,6 +150,27 @@ events:
   debounce_frames: 15
   min_crossing_disp: 0.0
 
+# 固定手术床（不动）——可在 Web 应用中标注多边形；也可手写归一化坐标
+# or_bed:
+#   polygon:
+#     - [0.35, 0.40]
+#     - [0.72, 0.40]
+#     - [0.72, 0.78]
+#     - [0.35, 0.78]
+#   label: 固定手术床
+#   fixed: true
+
+# 患者从推床转移到手术床
+transfer:
+  enabled: true
+  confirm_frames: 8          # 患者在手术床 ROI 内连续确认帧
+  empty_reset_frames: 45     # 空床多久后允许再次转移
+  require_stretcher_nearby: true
+  stretcher_near_dist_ratio: 0.38
+  stretcher_memory_frames: 120
+  patient_overlap_min: 0.35
+  debounce_frames: 90
+
 # 实时流（RTSP/HTTP/摄像头）—— scripts/run_stream.py
 stream:
   reconnect: true
@@ -170,6 +197,7 @@ output:
   draw_tracks: true
   draw_zone: true
   draw_door_line: true
+  draw_or_bed: true
   # 屏蔽直立医护/行人标注（默认开启；床/头/躺姿仍会画）
   hide_standing_staff: true
   # 屏蔽器械推车（默认开启；不参与入出室）

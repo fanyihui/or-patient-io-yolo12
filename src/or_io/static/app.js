@@ -17,6 +17,7 @@
     layer: "outside",
     outside: [],
     inside: [],
+    or_bed: [],
     previewTimer: null,
     eventTimer: null,
     frozen: false,
@@ -65,6 +66,7 @@
     $("#modeMeta").textContent = s.monitoring ? "模式：实时监测" : state.frozen ? "模式：截图标注" : "模式：预览";
     $("#statEnter").textContent = String(s.enters ?? s.stats?.enters ?? 0);
     $("#statExit").textContent = String(s.exits ?? s.stats?.exits ?? 0);
+    $("#statTransfer").textContent = String(s.transfers ?? s.stats?.transfers ?? 0);
     $("#statFrames").textContent = String(s.stats?.frames ?? 0);
     hint.classList.toggle("hidden", state.connected);
   }
@@ -135,7 +137,9 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     drawPoly(state.outside, "#3db8ff", "门外");
     drawPoly(state.inside, "#3ddea2", "门内");
-    $("#roiInfo").textContent = `门外 ${state.outside.length} 点 · 门内 ${state.inside.length} 点`;
+    drawPoly(state.or_bed, "#ffaa28", "手术床");
+    $("#roiInfo").textContent =
+      `门外 ${state.outside.length} · 门内 ${state.inside.length} · 手术床 ${state.or_bed.length}`;
   }
 
   function eventToNorm(evt) {
@@ -191,9 +195,16 @@
       list.innerHTML = data.events
         .map((e) => {
           const when = e.local_time || e.wall_time_iso || "";
-          const label = e.event === "enter" ? "入室" : "出室";
+          let label = e.event;
+          let cls = e.event;
+          if (e.event === "enter") label = "入室";
+          else if (e.event === "exit") label = "出室";
+          else if (e.event === "transfer_to_or_bed") {
+            label = "转移→手术床";
+            cls = "transfer";
+          }
           return `<li>
-            <span class="tag ${e.event}">${label}</span>
+            <span class="tag ${cls}">${label}</span>
             <span class="when">${when}</span>
             <span class="meta">track ${e.track_id} · frame ${e.frame_idx} · conf ${(e.confidence || 0).toFixed(2)}</span>
           </li>`;
@@ -201,6 +212,7 @@
         .join("");
       $("#statEnter").textContent = String(data.enters);
       $("#statExit").textContent = String(data.exits);
+      if (data.transfers != null) $("#statTransfer").textContent = String(data.transfers);
     } catch (_) {
       /* ignore */
     }
@@ -263,24 +275,31 @@
   $("#btnClearRoi").addEventListener("click", () => {
     state.outside = [];
     state.inside = [];
+    state.or_bed = [];
     drawRoi();
   });
 
   $("#btnSaveRoi").addEventListener("click", async () => {
-    if (state.outside.length < 3 || state.inside.length < 3) {
-      alert("门外与门内均需至少 3 个点");
+    const hasDoor = state.outside.length >= 3 && state.inside.length >= 3;
+    const hasBed = state.or_bed.length >= 3;
+    if (!hasDoor && !hasBed) {
+      alert("请至少标注门口（门外+门内各≥3点）或手术床（≥3点）");
       return;
     }
     try {
+      const body = {
+        site_name: $("#siteName").value.trim() || "or_door",
+        already_normalized: true,
+        save: true,
+      };
+      if (hasDoor) {
+        body.outside = state.outside;
+        body.inside = state.inside;
+      }
+      if (hasBed) body.or_bed = state.or_bed;
       const data = await api("/api/roi", {
         method: "POST",
-        body: JSON.stringify({
-          outside: state.outside,
-          inside: state.inside,
-          site_name: $("#siteName").value.trim() || "or_door",
-          already_normalized: true,
-          save: true,
-        }),
+        body: JSON.stringify(body),
       });
       applyState(data);
       statusPill.textContent = `ROI 已保存 ${data.roi_path || ""}`;
@@ -333,7 +352,19 @@
           const roi = await api("/api/roi");
           state.outside = roi.roi.zone.rois.outside.polygon;
           state.inside = roi.roi.zone.rois.inside.polygon;
+          if (roi.roi.or_bed && roi.roi.or_bed.polygon) {
+            state.or_bed = roi.roi.or_bed.polygon;
+          }
           drawRoi();
+        } catch (_) {}
+      }
+      if (s.has_or_bed_roi && (!s.has_roi || true)) {
+        try {
+          const roi = await api("/api/roi");
+          if (roi.roi.or_bed && roi.roi.or_bed.polygon) {
+            state.or_bed = roi.roi.or_bed.polygon;
+            drawRoi();
+          }
         } catch (_) {}
       }
     })

@@ -43,6 +43,27 @@ def draw_door_line(frame: np.ndarray, door: DoorLine) -> None:
     draw_zone(frame, door)
 
 
+def draw_or_bed(frame: np.ndarray, poly: np.ndarray) -> None:
+    """绘制固定手术床 ROI。"""
+    pts = poly.astype(np.int32).reshape(-1, 1, 2)
+    overlay = frame.copy()
+    cv2.fillPoly(overlay, [pts], (220, 140, 40))
+    cv2.addWeighted(overlay, 0.22, frame, 0.78, 0, frame)
+    cv2.polylines(frame, [pts], True, (0, 180, 255), 2, cv2.LINE_AA)
+    cx = int(np.mean(poly[:, 0]))
+    cy = int(np.mean(poly[:, 1]))
+    cv2.putText(
+        frame,
+        "OR BED",
+        (cx - 40, cy),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 200, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+
 def draw_track(
     frame: np.ndarray,
     track_id: int,
@@ -56,6 +77,7 @@ def draw_track(
     x1, y1, x2, y2 = map(int, xyxy)
     role_color = {
         "bed": (30, 180, 255),
+        "or_bed": (0, 180, 255),
         "equipment_cart": (180, 180, 40),
         "lying_patient": (40, 200, 80),
         "patient_head": (40, 220, 160),
@@ -65,10 +87,11 @@ def draw_track(
     color = role_color.get(role, (160, 160, 160))
     if not is_target and role in ("person", "other", "equipment_cart"):
         color = (160, 160, 160) if role != "equipment_cart" else (180, 180, 40)
-    thickness = 3 if is_target else 2
+    thickness = 3 if is_target or role == "or_bed" else 2
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
     prefix = {
         "bed": "BED",
+        "or_bed": "OR-BED",
         "equipment_cart": "CART",
         "lying_patient": "LYING",
         "patient_head": "HEAD",
@@ -120,12 +143,20 @@ def draw_pair(frame: np.ndarray, pair, side: str, confirmed: bool) -> None:
 def draw_event_banner(frame: np.ndarray, events: Iterable[IOEvent], hold: int = 45) -> None:
     y = 28
     for evt in events:
-        color = (50, 220, 50) if evt.event == "enter" else (40, 40, 230)
+        if evt.event == "enter":
+            color = (50, 220, 50)
+            tag = "ENTER"
+        elif evt.event == "exit":
+            color = (40, 40, 230)
+            tag = "EXIT"
+        else:
+            color = (0, 200, 255)
+            tag = "TRANSFER→OR BED"
         text = (
-            f"{evt.event.upper()}  track={evt.track_id}  "
+            f"{tag}  track={evt.track_id}  "
             f"t={evt.video_time_sec:.2f}s  frame={evt.frame_idx}"
         )
-        cv2.putText(frame, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
+        cv2.putText(frame, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2, cv2.LINE_AA)
         y += 28
 
 
@@ -136,11 +167,13 @@ def draw_hud(
     n_enter: int,
     n_exit: int,
     target_mode: str = "bed_patient",
+    n_transfer: int = 0,
 ) -> None:
     h, w = frame.shape[:2]
     panel = (
         f"target={target_mode}  frame={frame_idx}  "
-        f"time={frame_idx / max(fps, 1e-6):.1f}s  enter={n_enter}  exit={n_exit}"
+        f"time={frame_idx / max(fps, 1e-6):.1f}s  "
+        f"enter={n_enter}  exit={n_exit}  transfer={n_transfer}"
     )
     cv2.rectangle(frame, (0, h - 36), (w, h), (20, 20, 20), -1)
     cv2.putText(
@@ -148,7 +181,7 @@ def draw_hud(
         panel,
         (12, h - 12),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
+        0.52,
         (240, 240, 240),
         2,
         cv2.LINE_AA,

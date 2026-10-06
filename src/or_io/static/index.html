@@ -14,7 +14,7 @@
   <header class="top">
     <div class="brand-block">
       <p class="brand">OR Gate</p>
-      <p class="brand-sub">手术室入室监测</p>
+      <p class="brand-sub">入室 · 手术床转移监测</p>
     </div>
     <div class="status-pill" id="statusPill">未连接</div>
   </header>
@@ -54,20 +54,24 @@
       </section>
 
       <section class="card-free step-pane" data-pane="2">
-        <h2>截图并标注门口</h2>
-        <p class="help">先截图冻结画面，再依次点选<strong>门外</strong>与<strong>门内</strong>多边形（每区 ≥3 点）。</p>
+        <h2>截图并标注 ROI</h2>
+        <p class="help">截图后标注<strong>门外/门内</strong>（入室），以及<strong>固定手术床</strong>（推床→手术床转移）。</p>
         <div class="btn-row">
           <button type="button" class="btn primary" id="btnSnapshot">截图</button>
           <button type="button" class="btn ghost" id="btnClearRoi">清空点</button>
         </div>
-        <div class="roi-tools">
+        <div class="roi-tools three">
           <label class="seg">
             <input type="radio" name="roiLayer" value="outside" checked />
-            <span>门外 ROI</span>
+            <span>门外</span>
           </label>
           <label class="seg">
             <input type="radio" name="roiLayer" value="inside" />
-            <span>门内 ROI</span>
+            <span>门内</span>
+          </label>
+          <label class="seg">
+            <input type="radio" name="roiLayer" value="or_bed" />
+            <span>手术床</span>
           </label>
         </div>
         <label class="field">
@@ -75,14 +79,14 @@
           <input id="siteName" type="text" value="or_door" />
         </label>
         <div class="btn-row">
-          <button type="button" class="btn primary" id="btnSaveRoi">保存门 ROI</button>
+          <button type="button" class="btn primary" id="btnSaveRoi">保存 ROI</button>
         </div>
-        <p class="tiny" id="roiInfo">门外 0 点 · 门内 0 点</p>
+        <p class="tiny" id="roiInfo">门外 0 · 门内 0 · 手术床 0</p>
       </section>
 
       <section class="card-free step-pane" data-pane="3">
-        <h2>实时识别入室</h2>
-        <p class="help">检测「推着病人的病床」从门外 ROI 进入门内 ROI，并记录时间。</p>
+        <h2>实时识别</h2>
+        <p class="help">入室：推床穿门；转移：患者从推床落到<strong>固定手术床</strong>并记录时间。</p>
         <label class="field">
           <span>推理设备</span>
           <select id="deviceSelect">
@@ -98,6 +102,7 @@
         <div class="stats" id="statsBox">
           <div><em>入室</em><strong id="statEnter">0</strong></div>
           <div><em>出室</em><strong id="statExit">0</strong></div>
+          <div><em>转移</em><strong id="statTransfer">0</strong></div>
           <div><em>帧</em><strong id="statFrames">0</strong></div>
         </div>
       </section>

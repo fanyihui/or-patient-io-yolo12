@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import yaml
 
-from .events import IOEvent
+from .events import IOEvent, event_counts
 from .pipeline import ORIOPipeline, load_config, resolve_device
 from .roi_store import apply_roi_to_config, build_zone_payload, load_roi, save_roi_yaml
 from .stream import StreamConfig, is_stream_source, normalize_source, open_capture, grab_latest_frame
@@ -175,9 +175,10 @@ class AppSession:
 
     def set_roi(
         self,
-        outside: list,
-        inside: list,
+        outside: list | None = None,
+        inside: list | None = None,
         *,
+        or_bed: list | None = None,
         already_normalized: bool = True,
         site_name: str = "default",
         save: bool = True,
@@ -188,14 +189,44 @@ class AppSession:
         if frame is None:
             raise RuntimeError("无画面尺寸，请先连接并截图")
         h, w = frame.shape[:2]
-        payload = build_zone_payload(
-            outside,
-            inside,
-            w,
-            h,
-            already_normalized=already_normalized,
-            meta={"source": self.source, "site": site_name},
-        )
+
+        # 允许只更新手术床，或门 ROI + 手术床一起保存
+        base = deepcopy(self.roi_payload) if self.roi_payload else {}
+        or_bed_pts = or_bed
+        if or_bed_pts is None and isinstance(base.get("or_bed"), dict):
+            or_bed_pts = base["or_bed"].get("polygon")
+
+        if outside is not None and inside is not None and len(outside) >= 3 and len(inside) >= 3:
+            payload = build_zone_payload(
+                outside,
+                inside,
+                w,
+                h,
+                already_normalized=already_normalized,
+                meta={"source": self.source, "site": site_name},
+                or_bed=or_bed_pts if or_bed_pts and len(or_bed_pts) >= 3 else None,
+            )
+        elif or_bed_pts is not None and len(or_bed_pts) >= 3:
+            from .roi_store import build_or_bed_payload
+
+            bed_payload = build_or_bed_payload(
+                or_bed_pts,
+                w,
+                h,
+                already_normalized=already_normalized,
+                meta={"source": self.source, "site": site_name},
+            )
+            payload = deepcopy(base) if base else {}
+            payload["version"] = bed_payload["version"]
+            payload["saved_at"] = bed_payload["saved_at"]
+            payload["frame_size"] = bed_payload["frame_size"]
+            payload["or_bed"] = bed_payload["or_bed"]
+            payload.setdefault("meta", {}).update(bed_payload.get("meta") or {})
+            if "zone" not in payload and base.get("zone"):
+                payload["zone"] = deepcopy(base["zone"])
+        else:
+            raise RuntimeError("请提供门外+门内 ROI（各≥3点），或单独提供手术床 ROI（≥3点）")
+
         self.roi_payload = payload
         if save:
             import json
@@ -227,11 +258,23 @@ class AppSession:
         if not self.connected:
             raise RuntimeError("请先连接视频")
         if not self.roi_payload:
-            raise RuntimeError("请先标注并保存手术室门 ROI")
+            raise RuntimeError("请先标注并保存门口 ROI 和/或固定手术床 ROI")
+        has_door = bool((self.roi_payload.get("zone") or {}).get("rois"))
+        has_or_bed = bool((self.roi_payload.get("or_bed") or {}).get("polygon"))
+        if not has_door and not has_or_bed:
+            raise RuntimeError("请先标注门口 ROI 或固定手术床 ROI")
         if self.monitoring:
             return {"ok": True, "message": "监测已在运行"}
 
+        # 若只有手术床 ROI、没有门 ROI，补一个占位双 ROI 以免 build_zone 失败
         cfg = apply_roi_to_config(self.base_cfg, self.roi_payload)
+        if not has_door:
+            cfg.setdefault("zone", {})
+            cfg["zone"]["mode"] = "roi"
+            cfg["zone"]["rois"] = {
+                "outside": {"polygon": [[0.01, 0.01], [0.2, 0.01], [0.2, 0.2], [0.01, 0.2]]},
+                "inside": {"polygon": [[0.21, 0.01], [0.4, 0.01], [0.4, 0.2], [0.21, 0.2]]},
+            }
         cfg.setdefault("model", {})["device"] = resolve_device(
             device if device is not None else cfg.get("model", {}).get("device", "auto")
         )
@@ -263,6 +306,7 @@ class AppSession:
             "frames": 0,
             "enters": 0,
             "exits": 0,
+            "transfers": 0,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "last_frame_at": None,
             "device": cfg["model"]["device"],
@@ -284,8 +328,10 @@ class AppSession:
             row = evt.to_dict()
             row["local_time"] = datetime.now().astimezone().isoformat(timespec="seconds")
             self.events.append(row)
-            self.monitor_stats["enters"] = sum(1 for e in self.events if e["event"] == "enter")
-            self.monitor_stats["exits"] = sum(1 for e in self.events if e["event"] == "exit")
+            counts = event_counts(self.events)
+            self.monitor_stats["enters"] = counts["enters"]
+            self.monitor_stats["exits"] = counts["exits"]
+            self.monitor_stats["transfers"] = counts["transfers"]
             if self._on_event:
                 self._on_event(row)
 
@@ -348,6 +394,8 @@ class AppSession:
             self.pipeline._on_event_hook = None
 
     def state(self) -> dict:
+        counts = event_counts(self.events)
+        has_or_bed = bool(((self.roi_payload or {}).get("or_bed") or {}).get("polygon"))
         return {
             "connected": self.connected,
             "source": self.source,
@@ -355,11 +403,13 @@ class AppSession:
             "height": self.frame_h,
             "has_snapshot": self._snapshot is not None,
             "has_roi": self.roi_payload is not None,
+            "has_or_bed_roi": has_or_bed,
             "roi_path": str(self.roi_path) if self.roi_path else None,
             "monitoring": self.monitoring,
             "status": self.status_message,
             "stats": deepcopy(self.monitor_stats),
             "event_count": len(self.events),
-            "enters": sum(1 for e in self.events if e.get("event") == "enter"),
-            "exits": sum(1 for e in self.events if e.get("event") == "exit"),
+            "enters": counts["enters"],
+            "exits": counts["exits"],
+            "transfers": counts["transfers"],
         }

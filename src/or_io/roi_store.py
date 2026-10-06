@@ -49,6 +49,7 @@ def build_zone_payload(
     *,
     already_normalized: bool = True,
     meta: Dict[str, Any] | None = None,
+    or_bed: Sequence[Sequence[float]] | None = None,
 ) -> dict:
     out_poly = normalize_polygon(outside, frame_w, frame_h, already_normalized=already_normalized)
     in_poly = normalize_polygon(inside, frame_w, frame_h, already_normalized=already_normalized)
@@ -65,7 +66,36 @@ def build_zone_payload(
         },
         "meta": meta or {},
     }
+    if or_bed is not None and len(or_bed) >= 3:
+        bed_poly = normalize_polygon(or_bed, frame_w, frame_h, already_normalized=already_normalized)
+        payload["or_bed"] = {
+            "polygon": [list(p) for p in bed_poly],
+            "label": "固定手术床",
+            "fixed": True,
+        }
     return payload
+
+
+def build_or_bed_payload(
+    polygon: Sequence[Sequence[float]],
+    frame_w: int,
+    frame_h: int,
+    *,
+    already_normalized: bool = True,
+    meta: Dict[str, Any] | None = None,
+) -> dict:
+    bed_poly = normalize_polygon(polygon, frame_w, frame_h, already_normalized=already_normalized)
+    return {
+        "version": 1,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "frame_size": {"width": int(frame_w), "height": int(frame_h)},
+        "or_bed": {
+            "polygon": [list(p) for p in bed_poly],
+            "label": "固定手术床",
+            "fixed": True,
+        },
+        "meta": meta or {},
+    }
 
 
 def save_roi_yaml(path: str | Path, payload: dict, base_config: dict | None = None) -> Path:
@@ -76,7 +106,10 @@ def save_roi_yaml(path: str | Path, payload: dict, base_config: dict | None = No
         data = payload
     else:
         data = deepcopy(base_config)
-        data["zone"] = deepcopy(payload["zone"])
+        if "zone" in payload:
+            data["zone"] = deepcopy(payload["zone"])
+        if "or_bed" in payload:
+            data["or_bed"] = deepcopy(payload["or_bed"])
         data.setdefault("roi_meta", {})
         data["roi_meta"] = {
             "saved_at": payload.get("saved_at"),
@@ -98,18 +131,25 @@ def load_roi(path: str | Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    out: Dict[str, Any] = {
+        "version": data.get("version", 1),
+        "saved_at": (data.get("roi_meta") or {}).get("saved_at") or data.get("saved_at"),
+        "frame_size": (data.get("roi_meta") or {}).get("frame_size") or data.get("frame_size"),
+        "meta": data.get("roi_meta") or data.get("meta") or {},
+    }
     if "zone" in data and "rois" in (data.get("zone") or {}):
-        return {
-            "version": data.get("version", 1),
-            "saved_at": (data.get("roi_meta") or {}).get("saved_at") or data.get("saved_at"),
-            "frame_size": (data.get("roi_meta") or {}).get("frame_size") or data.get("frame_size"),
-            "zone": data["zone"],
-            "meta": data.get("roi_meta") or data.get("meta") or {},
-        }
-    raise ValueError(f"无法从 {path} 解析 zone.rois")
+        out["zone"] = data["zone"]
+    if "or_bed" in data:
+        out["or_bed"] = data["or_bed"]
+    if "zone" not in out and "or_bed" not in out:
+        raise ValueError(f"无法从 {path} 解析 zone.rois / or_bed")
+    return out
 
 
 def apply_roi_to_config(cfg: dict, roi_payload: dict) -> dict:
     out = deepcopy(cfg)
-    out["zone"] = deepcopy(roi_payload["zone"])
+    if "zone" in roi_payload:
+        out["zone"] = deepcopy(roi_payload["zone"])
+    if "or_bed" in roi_payload:
+        out["or_bed"] = deepcopy(roi_payload["or_bed"])
     return out
