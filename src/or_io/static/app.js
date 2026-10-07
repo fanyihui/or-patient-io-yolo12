@@ -68,6 +68,18 @@
     $("#statExit").textContent = String(s.exits ?? s.stats?.exits ?? 0);
     $("#statTransfer").textContent = String(s.transfers ?? s.stats?.transfers ?? 0);
     $("#statFrames").textContent = String(s.stats?.frames ?? 0);
+    const bedEl = $("#orBedStatus");
+    if (bedEl) {
+      const src = s.or_bed_source || s.stats?.or_bed_source;
+      const st = s.or_bed_auto_status || s.stats?.or_bed_auto_status;
+      if (src && String(src).startsWith("auto")) {
+        bedEl.textContent = st === "locked" ? `手术床：已自动锁定（${src}）` : "手术床：自动识别中…";
+      } else if (src === "manual" || s.has_or_bed_roi) {
+        bedEl.textContent = "手术床：手动 ROI";
+      } else {
+        bedEl.textContent = "手术床：自动识别中 / 未锁定";
+      }
+    }
     hint.classList.toggle("hidden", state.connected);
   }
 

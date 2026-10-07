@@ -15,6 +15,7 @@ import yaml
 
 from .events import EventManager, IOEvent, LiveEventRecorder, event_counts
 from .model_loader import load_detector
+from .or_bed_detect import AutoOrBedDetector, auto_or_bed_config_from_dict, resolve_or_table_class_ids
 from .stream import StreamConfig, is_stream_source, iter_frames, normalize_source, source_label
 from .stretcher_filter import PSEUDO_BED_CLASS_ID, BedPatientPair, Detection, TargetFilter
 from .transfer import TransferMonitor, poly_from_normalized, transfer_config_from_dict
@@ -115,21 +116,41 @@ class ORIOPipeline:
         self.transfer = TransferMonitor(cfg=tr_cfg, source="")
         or_bed = config.get("or_bed") or {}
         self._or_bed_norm = or_bed.get("polygon")
+        self._or_bed_manual = bool(self._or_bed_norm)
         self._or_bed_poly_size: Optional[Tuple[int, int]] = None
+        self._or_bed_source = "manual" if self._or_bed_manual else "none"
+
+        auto_cfg = auto_or_bed_config_from_dict(or_bed)
+        # 有手动 ROI 时默认不再自动搜索；也可 or_bed.auto_detect=true 强制开启
+        if self._or_bed_manual and "auto_detect" not in or_bed:
+            auto_cfg.enabled = False
+        or_table_ids = resolve_or_table_class_ids(
+            self.class_names,
+            or_bed.get("or_table_prompts"),
+        )
+        self.or_bed_auto = AutoOrBedDetector(
+            cfg=auto_cfg,
+            or_table_class_ids=or_table_ids,
+            bed_class_ids=set(self.target_filter.bed_class_ids) | set(or_table_ids),
+        )
+        if or_table_ids:
+            print(f"[or_bed] open-vocab OR-table class ids={or_table_ids}")
 
     def _ensure_or_bed(self, frame_w: int, frame_h: int) -> None:
-        if not self._or_bed_norm:
-            self.transfer.set_or_bed_poly(None)
+        if self._or_bed_manual and self._or_bed_norm:
+            if self._or_bed_poly_size == (frame_w, frame_h) and self.transfer.or_bed_poly is not None:
+                return
+            try:
+                poly = poly_from_normalized(self._or_bed_norm, frame_w, frame_h)
+                self.transfer.set_or_bed_poly(poly)
+                self._or_bed_poly_size = (frame_w, frame_h)
+                self._or_bed_source = "manual"
+            except Exception as e:  # noqa: BLE001
+                print(f"[or_bed] invalid manual ROI: {e}")
+                self.transfer.set_or_bed_poly(None)
             return
-        if self._or_bed_poly_size == (frame_w, frame_h) and self.transfer.or_bed_poly is not None:
-            return
-        try:
-            poly = poly_from_normalized(self._or_bed_norm, frame_w, frame_h)
-            self.transfer.set_or_bed_poly(poly)
-            self._or_bed_poly_size = (frame_w, frame_h)
-        except Exception as e:  # noqa: BLE001
-            print(f"[or_bed] invalid ROI: {e}")
-            self.transfer.set_or_bed_poly(None)
+        # 自动模式：由 process_frame 里 update 写入 poly
+        return
 
     def request_stop(self) -> None:
         self._stop_requested = True
@@ -344,8 +365,6 @@ class ORIOPipeline:
         if out_cfg.get("draw_door_line", True) or out_cfg.get("draw_zone", True):
             draw_zone(frame, zone)
         self._ensure_or_bed(width, height)
-        if out_cfg.get("draw_or_bed", True) and self.transfer.or_bed_poly is not None:
-            draw_or_bed(frame, self.transfer.or_bed_poly)
 
         dets = self._boxes_to_detections(boxes)
         if self.detector.backend == "fusion":
@@ -364,8 +383,35 @@ class ORIOPipeline:
             standing_boxes = self.target_filter.collect_standing_boxes(dets, width, height)
 
         roles = self.target_filter.classify_roles(dets, width, height)
+
+        # 自动识别固定手术床（无手动 ROI 时）
+        if not self._or_bed_manual and self.or_bed_auto.cfg.enabled:
+            auto_poly = self.or_bed_auto.update(
+                frame_idx=frame_idx,
+                frame_w=width,
+                frame_h=height,
+                detections=dets,
+                roles=roles,
+            )
+            if auto_poly is not None:
+                self.transfer.set_or_bed_poly(auto_poly)
+                self._or_bed_source = f"auto:{self.or_bed_auto.locked_from}"
+                self._or_bed_norm = self.or_bed_auto.locked_norm_polygon(width, height)
+            elif self.transfer.or_bed_poly is not None and self.or_bed_auto.status != "locked":
+                # 仍在搜索且尚未锁定
+                pass
+
+        if out_cfg.get("draw_or_bed", True) and self.transfer.or_bed_poly is not None:
+            label = "OR BED"
+            if self._or_bed_source.startswith("auto"):
+                label = "OR BED(auto)"
+            draw_or_bed(frame, self.transfer.or_bed_poly, label=label)
+
         for d in dets:
             if roles.get(d.track_id) == "bed" and self.transfer.is_fixed_or_bed_box(d.xyxy):
+                roles[d.track_id] = "or_bed"
+            # 开放词汇手术台类直接标成 or_bed
+            if int(d.class_id) in self.or_bed_auto.or_table_class_ids:
                 roles[d.track_id] = "or_bed"
             role = roles.get(d.track_id, "other")
             role_hist[role] = role_hist.get(role, 0) + 1
@@ -551,7 +597,9 @@ class ORIOPipeline:
             "started_at": getattr(self, "_run_started_at", None),
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "events": [e.to_dict() for e in self.event_manager.events],
-            "has_or_bed_roi": bool(self._or_bed_norm),
+            "has_or_bed_roi": bool(self._or_bed_norm) or self.transfer.or_bed_poly is not None,
+            "or_bed_source": self._or_bed_source,
+            "or_bed_auto_status": self.or_bed_auto.status,
         }
 
     def process_video(

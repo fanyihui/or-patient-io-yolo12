@@ -55,7 +55,7 @@
 
       <section class="card-free step-pane" data-pane="2">
         <h2>截图并标注 ROI</h2>
-        <p class="help">截图后标注<strong>门外/门内</strong>（入室），以及<strong>固定手术床</strong>（推床→手术床转移）。</p>
+        <p class="help">截图后可标注<strong>门外/门内</strong>（入室）与<strong>手术床</strong>；手术床也可<strong>自动识别</strong>（默认开启）。</p>
         <div class="btn-row">
           <button type="button" class="btn primary" id="btnSnapshot">截图</button>
           <button type="button" class="btn ghost" id="btnClearRoi">清空点</button>
@@ -86,7 +86,7 @@
 
       <section class="card-free step-pane" data-pane="3">
         <h2>实时识别</h2>
-        <p class="help">入室：推床穿门；转移：患者从推床落到<strong>固定手术床</strong>并记录时间。</p>
+        <p class="help">入室：推床穿门；转移：患者落到<strong>固定手术床</strong>（自动识别或手动 ROI）并记时。</p>
         <label class="field">
           <span>推理设备</span>
           <select id="deviceSelect">
@@ -99,6 +99,7 @@
           <button type="button" class="btn primary" id="btnStart">开始监测</button>
           <button type="button" class="btn danger" id="btnStop">停止</button>
         </div>
+        <p class="tiny" id="orBedStatus">手术床：自动识别中 / 未锁定</p>
         <div class="stats" id="statsBox">
           <div><em>入室</em><strong id="statEnter">0</strong></div>
           <div><em>出室</em><strong id="statExit">0</strong></div>

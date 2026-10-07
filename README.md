@@ -13,7 +13,7 @@
 5. **病床推车 vs 器械推车**：器械车整体更小，不参与入出室；可用尺寸门槛 + 专用提示区分
 6. **推器械车医护**：框变宽也不标成躺姿患者（直立宽框 + 靠近器械车排除）
 7. 空床不触发；床+头关联成功后穿越门口 ROI → enter/exit
-8. **固定手术床**：标注手术床 ROI；患者从推床转移到手术床 → `transfer_to_or_bed` 并记录时间
+8. **固定手术床**：默认**自动识别**（开放词汇 operating table + 多帧位置稳定锁定）；也可手动标注 ROI。患者从推床转移到手术床 → `transfer_to_or_bed`
 9. 兼容全身横向 / 合并框（合成视频与遮挡回退）
 
 ```yaml
@@ -47,8 +47,8 @@ python scripts/run_app.py --host 0.0.0.0 --port 8787
 
 流程：
 1. 填写一路视频源（RTSP / HTTP / 摄像头 `0` / 文件路径）并连接  
-2. **截图**冻结画面，点选**门外 / 门内**（入室）与**固定手术床** ROI，保存到 `configs/sites/`  
-3. **开始监测**：推床入室 + 患者从推床转移到手术床，右侧实时显示时间  
+2. **截图**后可标注门外/门内与手术床；**手术床默认自动识别**（画面出现 `OR BED(auto)` 即锁定成功）  
+3. **开始监测**：推床入室 + 患者转移到手术床，右侧显示时间  
 
 事件与 ROI 会写入 `outputs/app_*`（`events.jsonl` / `events.csv` / `door_roi.yaml`）。
 事件类型：`enter` / `exit` / `transfer_to_or_bed`。
@@ -111,7 +111,9 @@ model:
 
 ```yaml
 or_bed:
-  polygon: [[0.35,0.40],[0.72,0.40],[0.72,0.78],[0.35,0.78]]
+  auto_detect: true          # 自动识别固定手术床（默认开）
+  lock_frames: 25
+  # polygon: [...]           # 可选手动 ROI（有则优先）
 transfer:
   enabled: true
   confirm_frames: 8

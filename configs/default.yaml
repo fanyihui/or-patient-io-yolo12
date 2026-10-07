@@ -150,15 +150,28 @@ events:
   debounce_frames: 15
   min_crossing_disp: 0.0
 
-# 固定手术床（不动）——可在 Web 应用中标注多边形；也可手写归一化坐标
-# or_bed:
-#   polygon:
-#     - [0.35, 0.40]
-#     - [0.72, 0.40]
-#     - [0.72, 0.78]
-#     - [0.35, 0.78]
-#   label: 固定手术床
-#   fixed: true
+# 固定手术床
+# - 可手动标注 polygon（优先）
+# - 或开启 auto_detect：用「operating table」开放词汇 + 多帧位置稳定自动锁定
+or_bed:
+  auto_detect: true
+  lock_frames: 25
+  max_center_motion_ratio: 0.025
+  min_area_ratio: 0.04
+  poly_expand: 0.08
+  # polygon:   # 手动 ROI（可选，有则优先于自动）
+  #   - [0.35, 0.40]
+  #   - [0.72, 0.40]
+  #   - [0.72, 0.78]
+  #   - [0.35, 0.78]
+  label: 固定手术床
+  fixed: true
+  or_table_prompts:
+    - operating table
+    - surgical table
+    - OR table
+    - operating bed
+    - surgical bed
 
 # 患者从推床转移到手术床
 transfer:

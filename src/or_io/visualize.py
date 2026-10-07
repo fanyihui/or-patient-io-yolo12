@@ -43,7 +43,7 @@ def draw_door_line(frame: np.ndarray, door: DoorLine) -> None:
     draw_zone(frame, door)
 
 
-def draw_or_bed(frame: np.ndarray, poly: np.ndarray) -> None:
+def draw_or_bed(frame: np.ndarray, poly: np.ndarray, label: str = "OR BED") -> None:
     """绘制固定手术床 ROI。"""
     pts = poly.astype(np.int32).reshape(-1, 1, 2)
     overlay = frame.copy()
@@ -54,10 +54,10 @@ def draw_or_bed(frame: np.ndarray, poly: np.ndarray) -> None:
     cy = int(np.mean(poly[:, 1]))
     cv2.putText(
         frame,
-        "OR BED",
-        (cx - 40, cy),
+        label,
+        (cx - 50, cy),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.65,
         (0, 200, 255),
         2,
         cv2.LINE_AA,

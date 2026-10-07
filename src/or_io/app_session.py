@@ -257,17 +257,32 @@ class AppSession:
     def start_monitor(self, *, device: str | int | None = None, output_name: Optional[str] = None) -> dict:
         if not self.connected:
             raise RuntimeError("请先连接视频")
-        if not self.roi_payload:
+        has_door = bool((self.roi_payload.get("zone") or {}).get("rois")) if self.roi_payload else False
+        has_or_bed = bool(((self.roi_payload or {}).get("or_bed") or {}).get("polygon"))
+        auto_or = bool((self.base_cfg.get("or_bed") or {}).get("auto_detect", True))
+        if not has_door and not has_or_bed and not auto_or:
+            raise RuntimeError("请先标注门口 ROI 或固定手术床 ROI（或开启 or_bed.auto_detect）")
+        if not self.roi_payload and not auto_or:
             raise RuntimeError("请先标注并保存门口 ROI 和/或固定手术床 ROI")
-        has_door = bool((self.roi_payload.get("zone") or {}).get("rois"))
-        has_or_bed = bool((self.roi_payload.get("or_bed") or {}).get("polygon"))
-        if not has_door and not has_or_bed:
-            raise RuntimeError("请先标注门口 ROI 或固定手术床 ROI")
         if self.monitoring:
             return {"ok": True, "message": "监测已在运行"}
 
-        # 若只有手术床 ROI、没有门 ROI，补一个占位双 ROI 以免 build_zone 失败
-        cfg = apply_roi_to_config(self.base_cfg, self.roi_payload)
+        # 若只有自动手术床、没有门 ROI，补占位双 ROI 以免 build_zone 失败
+        cfg = deepcopy(self.base_cfg)
+        if self.roi_payload:
+            cfg = apply_roi_to_config(cfg, self.roi_payload)
+        # 合并默认 or_bed 自动识别参数，避免被空 payload 覆盖
+        base_or = deepcopy(self.base_cfg.get("or_bed") or {})
+        cfg_or = cfg.setdefault("or_bed", {})
+        for k, v in base_or.items():
+            cfg_or.setdefault(k, v)
+        if has_or_bed:
+            cfg_or["polygon"] = (self.roi_payload or {}).get("or_bed", {}).get("polygon")
+            # 有手动 ROI 时默认关闭自动（仍可在配置里强制 auto_detect=true）
+            if "auto_detect" not in ((self.roi_payload or {}).get("or_bed") or {}):
+                cfg_or["auto_detect"] = False
+        else:
+            cfg_or["auto_detect"] = True
         if not has_door:
             cfg.setdefault("zone", {})
             cfg["zone"]["mode"] = "roi"
@@ -311,6 +326,8 @@ class AppSession:
             "last_frame_at": None,
             "device": cfg["model"]["device"],
             "output_dir": str(self.output_dir),
+            "or_bed_source": None,
+            "or_bed_auto_status": None,
         }
 
         from .events import LiveEventRecorder
@@ -372,6 +389,12 @@ class AppSession:
                 frame_idx += 1
                 self.monitor_stats["frames"] = frame_idx
                 self.monitor_stats["last_frame_at"] = datetime.now(timezone.utc).isoformat()
+                if self.pipeline is not None:
+                    self.monitor_stats["or_bed_source"] = getattr(self.pipeline, "_or_bed_source", None)
+                    self.monitor_stats["or_bed_auto_status"] = getattr(
+                        getattr(self.pipeline, "or_bed_auto", None), "status", None
+                    )
+                    self.monitor_stats["has_or_bed_roi"] = self.pipeline.transfer.or_bed_poly is not None
         except Exception as e:  # noqa: BLE001
             self.status_message = f"监测异常: {e}"
         finally:
@@ -412,4 +435,6 @@ class AppSession:
             "enters": counts["enters"],
             "exits": counts["exits"],
             "transfers": counts["transfers"],
+            "or_bed_source": (self.monitor_stats or {}).get("or_bed_source"),
+            "or_bed_auto_status": (self.monitor_stats or {}).get("or_bed_auto_status"),
         }
